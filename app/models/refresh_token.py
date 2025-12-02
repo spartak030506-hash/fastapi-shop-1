@@ -1,0 +1,27 @@
+import uuid
+from datetime import datetime
+from sqlalchemy import String, DateTime, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import UUID
+
+from app.models.base import BaseModel
+
+
+class RefreshToken(BaseModel):
+    """Модель refresh токена"""
+
+    __tablename__ = "refresh_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_revoked: Mapped[bool] = mapped_column(default=False, nullable=False)
+    device_info: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Relationship
+    user: Mapped['User'] = relationship("User", back_populates="refresh_tokens")
