@@ -29,10 +29,13 @@ class Base(DeclarativeBase):
 
 # Dependency для получения сессии БД
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency для получения сессии БД.
+    Commit выполняется явно в service layer, не автоматически.
+    """
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
