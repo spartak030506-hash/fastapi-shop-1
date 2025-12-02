@@ -1,5 +1,6 @@
-import re
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
+
+from app.utils.validators import validate_password_strength
 
 
 # Схема для регистрации
@@ -11,17 +12,12 @@ class RegisterRequest(BaseModel):
     last_name: str = Field(..., min_length=1, max_length=100)
     phone: str | None = Field(None, max_length=20, pattern=r"^\+?[0-9\-() ]{7,20}$")
 
+    model_config = ConfigDict(extra="forbid")
+
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        """Проверка сложности пароля"""
-        if not re.search(r"[A-Z]", v):
-            raise ValueError("Пароль должен содержать хотя бы одну заглавную букву")
-        if not re.search(r"[a-z]", v):
-            raise ValueError("Пароль должен содержать хотя бы одну строчную букву")
-        if not re.search(r"[0-9]", v):
-            raise ValueError("Пароль должен содержать хотя бы одну цифру")
-        return v
+        return validate_password_strength(v)
 
 
 # Схема для входа
@@ -29,6 +25,8 @@ class LoginRequest(BaseModel):
     """Схема запроса входа"""
     email: EmailStr
     password: str
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # Схема ответа с токенами
@@ -43,6 +41,8 @@ class TokenResponse(BaseModel):
 class RefreshTokenRequest(BaseModel):
     """Схема запроса обновления токена"""
     refresh_token: str
+
+    model_config = ConfigDict(extra="forbid")
 
 
 # Схема ответа при успешной операции
