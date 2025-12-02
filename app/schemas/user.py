@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+
 from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 
 from app.models.user import UserRole
@@ -12,7 +13,11 @@ class UserBase(BaseModel):
     email: EmailStr
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
-    phone: str | None = Field(None, max_length=20, pattern=r"^\+?[0-9\-() ]{7,20}$")
+    phone: str | None = Field(
+        None,
+        max_length=20,
+        pattern=r"^\+?[0-9\-() ]{7,20}$",
+    )
 
 
 # Схема для создания пользователя
@@ -42,9 +47,14 @@ class UserUpdate(BaseModel):
     """Схема для обновления пользователя"""
     first_name: str | None = Field(None, min_length=1, max_length=100)
     last_name: str | None = Field(None, min_length=1, max_length=100)
-    phone: str | None = Field(None, max_length=20, pattern=r"^\+?[0-9\-() ]{7,20}$")
+    phone: str | None = Field(
+        None,
+        max_length=20,
+        pattern=r"^\+?[0-9\-() ]{7,20}$",
+    )
 
-    model_config = ConfigDict(validate_assignment=True, extra="forbid")
+    # validate_assignment убрал — обычно схемы не мутируют после создания
+    model_config = ConfigDict(extra="forbid")
 
 
 # Схема для изменения пароля
@@ -71,7 +81,10 @@ class UserResponse(UserBase):
     created_at: datetime
     updated_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,  # можно создавать из ORM-объекта
+        frozen=True,           # иммутабельный объект ответа
+    )
 
 
 # Схема для краткого ответа (например, в списке)
@@ -80,4 +93,7 @@ class UserShort(UserBase):
     id: uuid.UUID
     role: UserRole
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True,
+        frozen=True,
+    )

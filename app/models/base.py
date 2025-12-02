@@ -1,6 +1,7 @@
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import DateTime, event, func
+from datetime import datetime
+
+from sqlalchemy import DateTime, func, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -13,26 +14,25 @@ class BaseModel(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        default=uuid.uuid4,
+        default=uuid.uuid4,   # генерим UUID на уровне Python
         index=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
+        server_default=func.now(),  # БД сама проставит текущий момент
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
+        server_default=func.now(),  # начальное значение
+        onupdate=func.now(),        # автообновление при UPDATE на уровне БД
         nullable=False,
     )
 
-    is_deleted: Mapped[bool] = mapped_column(default=False, nullable=False)
-
-
-# Event listener для автоматического обновления updated_at
-@event.listens_for(BaseModel, "before_update", propagate=True)
-def receive_before_update(mapper, connection, target):
-    target.updated_at = datetime.now(timezone.utc)
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default="false",
+    )
