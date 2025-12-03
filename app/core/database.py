@@ -31,11 +31,16 @@ class Base(DeclarativeBase):
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
     Dependency для получения сессии БД.
-    Commit выполняется явно в service layer, не автоматически.
+
+    Реализует паттерн "1 HTTP-запрос = 1 транзакция":
+    - При успешном выполнении запроса автоматически делает commit()
+    - При ошибке автоматически делает rollback()
+    - Сервисы не должны вызывать commit/rollback вручную
     """
     async with AsyncSessionLocal() as session:
         try:
             yield session
+            await session.commit()
         except Exception:
             await session.rollback()
             raise
