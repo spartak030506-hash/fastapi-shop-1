@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 
 from app.utils.validators import validate_password_strength
+from app.schemas.user import UserResponse
 
 
 # Схема для регистрации
@@ -61,6 +62,17 @@ class RefreshTokenRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
+    )
+
+
+# Схема ответа с пользователем и токенами
+class AuthResponse(BaseModel):
+    """Схема ответа при регистрации и логине"""
+    user: UserResponse
+    tokens: TokenResponse
+
+    model_config = ConfigDict(
+        frozen=True,
     )
 
 

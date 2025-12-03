@@ -9,8 +9,8 @@ from app.schemas.auth import (
     TokenResponse,
     RefreshTokenRequest,
     MessageResponse,
+    AuthResponse,
 )
-from app.schemas.user import UserResponse
 from app.api.dependencies import get_current_active_user
 from app.models.user import User
 
@@ -25,7 +25,7 @@ def get_device_info(request: Request) -> str:
 
 @router.post(
     "/register",
-    response_model=dict,
+    response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Регистрация нового пользователя"
 )
@@ -33,7 +33,7 @@ async def register(
     data: RegisterRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> AuthResponse:
     """
     Регистрация нового пользователя.
 
@@ -44,12 +44,12 @@ async def register(
 
     user, tokens = await service.register(data, device_info)
 
-    return {"user": user, "tokens": tokens}
+    return AuthResponse(user=user, tokens=tokens)
 
 
 @router.post(
     "/login",
-    response_model=dict,
+    response_model=AuthResponse,
     status_code=status.HTTP_200_OK,
     summary="Вход в систему"
 )
@@ -57,7 +57,7 @@ async def login(
     data: LoginRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> dict:
+) -> AuthResponse:
     """
     Аутентификация пользователя по email и паролю.
 
@@ -68,7 +68,7 @@ async def login(
 
     user, tokens = await service.login(data, device_info)
 
-    return {"user": user, "tokens": tokens}
+    return AuthResponse(user=user, tokens=tokens)
 
 
 @router.post(
@@ -135,20 +135,3 @@ async def logout_all_devices(
     count = await service.logout_all_devices(current_user.id)
 
     return MessageResponse(message=f"Logged out from {count} device(s)")
-
-
-@router.get(
-    "/me",
-    response_model=UserResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Получить текущего пользователя"
-)
-async def get_me(
-    current_user: User = Depends(get_current_active_user),
-) -> UserResponse:
-    """
-    Возвращает данные текущего аутентифицированного пользователя.
-
-    Требуется аутентификация (Bearer token).
-    """
-    return UserResponse.model_validate(current_user)

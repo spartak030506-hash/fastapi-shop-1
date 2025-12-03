@@ -13,6 +13,7 @@ from app.schemas.auth import (
     TokenResponse,
     RefreshTokenRequest,
     MessageResponse,
+    AuthResponse,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "TokenResponse",
     "RefreshTokenRequest",
     "MessageResponse",
+    "AuthResponse",
 ]
