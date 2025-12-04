@@ -10,7 +10,7 @@ from app.schemas.user import UserResponse
 class RegisterRequest(BaseModel):
     """Схема запроса регистрации"""
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=72)
     first_name: str = Field(..., min_length=1, max_length=100)
     last_name: str = Field(..., min_length=1, max_length=100)
     phone: str | None = Field(
