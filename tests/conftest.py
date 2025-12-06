@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import uuid
+from datetime import datetime, timezone, timedelta
 from typing import AsyncGenerator, Callable
 
 import pytest
@@ -17,6 +19,7 @@ from app.core.security import hash_password, create_access_token
 from app.main import app
 from app.models.base import BaseModel
 from app.models.user import User, UserRole
+from app.models.refresh_token import RefreshToken
 
 
 # Тестовая база данных
@@ -50,13 +53,19 @@ def event_loop():
 
 
 @pytest.fixture(scope="function", autouse=True)
-async def setup_database():
+async def setup_database(request):
     """
     Создаёт таблицы перед каждым тестом и удаляет после.
 
-    autouse=True означает, что фикстура применяется автоматически ко всем тестам.
+    autouse=True применяет фикстуру автоматически ко всем тестам.
+    Unit-тесты (@pytest.mark.unit) пропускают создание БД.
     Обеспечивает полную изоляцию тестов.
     """
+    # Пропускаем setup для unit-тестов (они не требуют БД)
+    if "unit" in request.keywords:
+        yield
+        return
+
     async with test_engine.begin() as conn:
         await conn.run_sync(BaseModel.metadata.create_all)
 
