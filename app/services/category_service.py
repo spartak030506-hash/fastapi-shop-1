@@ -48,7 +48,7 @@ class CategoryService:
 
         # Проверка уникальности name в рамках parent
         if await self.category_repo.name_exists_in_parent(data.name, data.parent_id):
-            parent_info = f"pяarent category" if data.parent_id else "root level"
+            parent_info = f"parent category" if data.parent_id else "root level"
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Category with name '{data.name}' already exists in {parent_info}"
