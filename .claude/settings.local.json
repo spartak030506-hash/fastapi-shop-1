@@ -4,7 +4,8 @@
       "Bash(dir /B /S D:DanilDesktopFastAPI-shop-3app)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "mcp__context7__get-library-docs"
+      "mcp__context7__get-library-docs",
+      "mcp__context7__resolve-library-id"
     ],
     "deny": [],
     "ask": []
