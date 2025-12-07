@@ -231,6 +231,38 @@ class AuthService:
 
         await self.token_repo.revoke_all_user_tokens(user_id)
 
+    async def delete_user(self, user_id: uuid.UUID) -> None:
+        """
+        Удаление пользователя (soft delete).
+
+        При удалении:
+        - Отзываются все refresh токены (выход со всех устройств)
+        - Пользователь помечается как удаленный (is_deleted=True)
+
+        Args:
+            user_id: UUID пользователя
+
+        Raises:
+            HTTPException 404: Пользователь не найден
+        """
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Сначала отзываем все токены
+        await self.token_repo.revoke_all_user_tokens(user_id)
+
+        # Потом soft delete пользователя
+        deleted = await self.user_repo.soft_delete(user_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to delete user"
+            )
+
     async def _create_tokens_for_user(
         self,
         user_id: uuid.UUID,

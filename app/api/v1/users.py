@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, status
+import uuid as uuid_module
+from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.services.auth_service import AuthService
 from app.repositories.user import UserRepository
 from app.schemas.user import UserResponse, UserUpdate, UserPasswordChange
-from app.schemas.auth import MessageResponse
+from app.schemas.common import MessageResponse
 from app.api.dependencies import get_current_active_user, require_admin
 from app.models.user import User
 
@@ -86,6 +87,28 @@ async def change_password(
     return MessageResponse(message="Password changed successfully")
 
 
+@router.delete(
+    "/me",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Удалить свой аккаунт"
+)
+async def delete_my_account(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    """
+    Удалить свой аккаунт (soft delete).
+
+    После удаления все refresh токены будут отозваны.
+    Требуется аутентификация (Bearer token).
+    """
+    service = AuthService(db)
+    await service.delete_user(current_user.id)
+
+    return MessageResponse(message="Account deleted successfully")
+
+
 @router.get(
     "/{user_id}",
     response_model=UserResponse,
@@ -102,11 +125,8 @@ async def get_user_by_id(
 
     Требуется роль ADMIN.
     """
-    import uuid
-    from fastapi import HTTPException
-
     try:
-        user_uuid = uuid.UUID(user_id)
+        user_uuid = uuid_module.UUID(user_id)
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -146,3 +166,41 @@ async def get_users_list(
     users = await user_repo.get_all(skip=skip, limit=limit)
 
     return [UserResponse.model_validate(user) for user in users]
+
+
+@router.delete(
+    "/{user_id}",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Удалить пользователя (только для админов)"
+)
+async def delete_user(
+    user_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+) -> MessageResponse:
+    """
+    Удалить пользователя по ID (soft delete).
+
+    Требуется роль ADMIN.
+    Админ не может удалить сам себя через этот endpoint.
+    """
+    try:
+        user_uuid = uuid_module.UUID(user_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user ID format"
+        )
+
+    # Проверка: админ не может удалить самого себя
+    if user_uuid == current_admin.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete yourself. Use DELETE /users/me instead"
+        )
+
+    service = AuthService(db)
+    await service.delete_user(user_uuid)
+
+    return MessageResponse(message="User deleted successfully")
