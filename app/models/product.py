@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import String, Boolean, ForeignKey, Integer, Numeric
+from sqlalchemy import String, Boolean, ForeignKey, Integer, Numeric, CheckConstraint, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -27,8 +27,6 @@ class Product(BaseModel):
 
     slug: Mapped[str] = mapped_column(
         String(255),
-        unique=True,
-        index=True,
         nullable=False,
     )
 
@@ -57,8 +55,11 @@ class Product(BaseModel):
 
     sku: Mapped[str | None] = mapped_column(
         String(100),
-        unique=True,
-        index=True,
+        nullable=True,
+    )
+
+    image_url: Mapped[str | None] = mapped_column(
+        String(500),
         nullable=True,
     )
 
@@ -73,4 +74,25 @@ class Product(BaseModel):
         "Category",
         back_populates="products",
         lazy="selectin",
+    )
+
+    # Constraints и индексы с учетом soft delete
+    __table_args__ = (
+        # Валидация данных на уровне БД
+        CheckConstraint("price > 0", name="check_price_positive"),
+        CheckConstraint("stock_quantity >= 0", name="check_stock_non_negative"),
+        # Уникальность slug (только для активных)
+        Index(
+            "ix_product_slug",
+            "slug",
+            unique=True,
+            postgresql_where=text("is_deleted = false"),
+        ),
+        # Уникальность sku (только для активных и не-null)
+        Index(
+            "ix_product_sku",
+            "sku",
+            unique=True,
+            postgresql_where=text("sku IS NOT NULL AND is_deleted = false"),
+        ),
     )

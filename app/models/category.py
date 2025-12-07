@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import uuid
 
-from sqlalchemy import String, Boolean, ForeignKey, Index
+from sqlalchemy import String, Boolean, ForeignKey, Index, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 
@@ -25,8 +25,6 @@ class Category(BaseModel):
 
     slug: Mapped[str] = mapped_column(
         String(255),
-        unique=True,
-        index=True,
         nullable=False,
     )
 
@@ -70,13 +68,21 @@ class Category(BaseModel):
         lazy="selectin",
     )
 
-    # Составной индекс для уникальности name в рамках одного parent
+    # Индексы с учетом soft delete
     __table_args__ = (
+        # Уникальность name в рамках одного parent (только для активных)
         Index(
             "ix_category_parent_name",
             "parent_id",
             "name",
             unique=True,
-            postgresql_where="is_deleted = false",
+            postgresql_where=text("is_deleted = false"),
+        ),
+        # Уникальность slug (только для активных)
+        Index(
+            "ix_category_slug",
+            "slug",
+            unique=True,
+            postgresql_where=text("is_deleted = false"),
         ),
     )
