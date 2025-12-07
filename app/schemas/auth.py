@@ -4,6 +4,7 @@ from pydantic import BaseModel, EmailStr, ConfigDict, Field, field_validator
 
 from app.utils.validators import validate_password_strength
 from app.schemas.user import UserResponse
+from app.schemas.common import MessageResponse
 
 
 # Схема для регистрации
@@ -70,16 +71,6 @@ class AuthResponse(BaseModel):
     """Схема ответа при регистрации и логине"""
     user: UserResponse
     tokens: TokenResponse
-
-    model_config = ConfigDict(
-        frozen=True,
-    )
-
-
-# Схема ответа при успешной операции
-class MessageResponse(BaseModel):
-    """Схема ответа с сообщением"""
-    message: str
 
     model_config = ConfigDict(
         frozen=True,
