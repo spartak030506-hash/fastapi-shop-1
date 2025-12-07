@@ -133,18 +133,25 @@ app/
 ├── models/
 │   ├── base.py                  # BaseModel (UUID, timestamps, soft delete)
 │   ├── user.py                  # User model
-│   └── refresh_token.py         # RefreshToken model
+│   ├── refresh_token.py         # RefreshToken model
+│   ├── category.py              # Category model (иерархия)
+│   └── product.py               # Product model
 ├── repositories/
 │   ├── base.py                  # BaseRepository[T] (Generic CRUD)
 │   ├── user.py                  # UserRepository
-│   └── refresh_token.py         # RefreshTokenRepository
+│   ├── refresh_token.py         # RefreshTokenRepository
+│   ├── category.py              # CategoryRepository
+│   └── product.py               # ProductRepository
 ├── schemas/
+│   ├── __init__.py              # Exports всех схем
 │   ├── user.py                  # User Pydantic schemas
-│   └── auth.py                  # Auth Pydantic schemas (AuthResponse!)
+│   ├── auth.py                  # Auth Pydantic schemas (AuthResponse!)
+│   ├── category.py              # Category Pydantic schemas
+│   └── product.py               # Product Pydantic schemas
 ├── services/
 │   └── auth_service.py          # AuthService (БЕЗ commit!)
 ├── utils/
-│   └── validators.py            # Password strength validator
+│   └── validators.py            # Validators (password, slug, URL, decimal, int)
 └── main.py                      # FastAPI app
 
 tests/
@@ -158,7 +165,9 @@ tests/
 alembic/
 └── versions/
     ├── 450aefd42d81_initial_migration_users_and_refresh_.py
-    └── 4e6debc855da_улучшение_моделей_server_default_.py
+    ├── 4e6debc855da_улучшение_моделей_server_default_.py
+    ├── 8f186bfe332d_add_category_and_product_models_with_.py
+    └── 57a33d905860_add_image_url_to_product_model.py
 ```
 
 ---
@@ -170,22 +179,44 @@ alembic/
 - Security (JWT двойной секрет, bcrypt, SHA-256 для refresh токенов)
 - Config (Pydantic v2 settings с .env)
 - Exceptions (Custom HTTPException классы)
-- Migrations (Alembic, 2 миграции применены)
+- Migrations (Alembic, 4 миграции применены)
 
 ### ✅ Models (SQLAlchemy 2.0)
-- BaseModel (UUID, created_at, updated_at, is_deleted, onupdate)
-- User (роли: CUSTOMER/ADMIN, статусы: is_active/is_verified, lazy="selectin")
-- RefreshToken (token_hash SHA-256, device_info, expires_at, индекс на expires_at)
+- **BaseModel** (UUID, created_at, updated_at, is_deleted, onupdate)
+- **User** (роли: CUSTOMER/ADMIN, статусы: is_active/is_verified, lazy="selectin")
+- **RefreshToken** (token_hash SHA-256, device_info, expires_at, индекс на expires_at)
+- **Category** (иерархия parent/children, partial unique indexes с soft delete, is_active)
+- **Product** (price Decimal(10,2), stock_quantity, SKU, image_url, CheckConstraints на уровне БД)
 
 ### ✅ Schemas (Pydantic v2)
-- User schemas (frozen=True для responses, str_strip_whitespace для inputs)
-- Auth schemas (AuthResponse вместо dict, Literal["bearer"], extra="forbid")
-- Validators (password strength: 8+ chars, uppercase, lowercase, digits)
+- **User schemas** (frozen=True для responses, str_strip_whitespace для inputs)
+- **Auth schemas** (AuthResponse вместо dict, Literal["bearer"], extra="forbid")
+- **Category schemas** (Base, Create, Update, Response, Short, WithChildren)
+- **Product schemas** (Base, Create, Update, Response, WithCategory, Short)
+- **Validators**:
+  - password strength (8+ chars, uppercase, lowercase, digits)
+  - slug (URL-friendly format, lowercase + дефисы)
+  - URL (http/https схемы)
+  - positive_decimal (Decimal > 0)
+  - non_negative_int (int >= 0)
 
 ### ✅ Repositories (Generic типизация)
-- BaseRepository[T] (Generic CRUD, soft delete, type-safe)
-- UserRepository (email_exists, get_by_email, get_by_role)
-- RefreshTokenRepository (is_token_valid, revoke_token, revoke_all_user_tokens)
+- **BaseRepository[T]** (Generic CRUD, soft delete, type-safe)
+- **UserRepository** (email_exists, get_by_email, get_by_role, get_active_users)
+- **RefreshTokenRepository** (is_token_valid, revoke_token, revoke_all_user_tokens)
+- **CategoryRepository**:
+  - get_by_slug, slug_exists
+  - get_by_parent (подкатегории)
+  - get_root_categories (корневые категории)
+  - name_exists_in_parent (уникальность в рамках parent)
+  - get_active_categories
+- **ProductRepository**:
+  - get_by_slug, get_by_sku
+  - slug_exists, sku_exists
+  - get_by_category
+  - get_active_products, get_low_stock_products, get_out_of_stock_products
+  - search_by_name (регистронезависимый поиск)
+  - search (комплексный поиск с фильтрами: название, категория, цена, наличие)
 
 ### ✅ Services
 - AuthService (register, login, refresh_tokens, logout, logout_all_devices, change_password)
@@ -517,10 +548,225 @@ mypy app
 
 ---
 
+## Category & Product модули (Production-Ready)
+
+### Category Model (app/models/category.py)
+
+**Поля:**
+- `name` - название категории (String 255)
+- `slug` - URL-friendly идентификатор (String 255)
+- `description` - описание (String 1000, nullable)
+- `parent_id` - ID родительской категории (UUID, nullable, FK с CASCADE)
+- `is_active` - активность категории (Boolean, default True)
+
+**Relationships:**
+- `parent` - родительская категория (self-referential, lazy="selectin")
+- `children` - подкатегории (list, cascade="all, delete-orphan")
+- `products` - товары в категории (list, cascade="all, delete-orphan")
+
+**Индексы и ограничения:**
+```python
+# Partial unique index для slug (только для is_deleted=false)
+Index("ix_category_slug", "slug", unique=True,
+      postgresql_where=text("is_deleted = false"))
+
+# Partial unique index для name в рамках parent_id
+Index("ix_category_parent_name", "parent_id", "name", unique=True,
+      postgresql_where=text("is_deleted = false"))
+```
+
+**Особенности:**
+- Поддержка иерархии (неограниченная вложенность)
+- Partial indexes для корректной работы с soft delete
+- Автоматическая загрузка связей через lazy="selectin"
+
+---
+
+### Product Model (app/models/product.py)
+
+**Поля:**
+- `name` - название продукта (String 255)
+- `slug` - URL-friendly идентификатор (String 255)
+- `description` - описание (String 2000, nullable)
+- `price` - цена (Numeric 10,2) **с CheckConstraint > 0**
+- `category_id` - ID категории (UUID, FK с RESTRICT)
+- `stock_quantity` - остаток (Integer, default 0) **с CheckConstraint >= 0**
+- `sku` - артикул (String 100, nullable, unique)
+- `image_url` - URL изображения (String 500, nullable)
+- `is_active` - активность (Boolean, default True)
+
+**Relationships:**
+- `category` - категория товара (Many-to-One, lazy="selectin")
+
+**Constraints и индексы:**
+```python
+# Валидация на уровне БД
+CheckConstraint("price > 0", name="check_price_positive")
+CheckConstraint("stock_quantity >= 0", name="check_stock_non_negative")
+
+# Partial unique indexes
+Index("ix_product_slug", "slug", unique=True,
+      postgresql_where=text("is_deleted = false"))
+Index("ix_product_sku", "sku", unique=True,
+      postgresql_where=text("sku IS NOT NULL AND is_deleted = false"))
+```
+
+**Особенности:**
+- CheckConstraints защищают от некорректных данных на уровне БД
+- Decimal для цены (избегаем проблем с float)
+- ondelete="RESTRICT" - нельзя удалить категорию с товарами
+- Partial indexes для SKU учитывают NULL значения
+
+---
+
+### Pydantic Schemas
+
+**Category Schemas (app/schemas/category.py):**
+- `CategoryBase` - базовые поля (name, slug, description)
+- `CategoryCreate` - создание + валидация slug
+- `CategoryUpdate` - обновление (все поля optional)
+- `CategoryResponse` - ответ API (frozen, from_attributes)
+- `CategoryShort` - краткая версия для списков
+- `CategoryWithChildren` - с вложенными подкатегориями
+
+**Product Schemas (app/schemas/product.py):**
+- `ProductBase` - базовые поля
+- `ProductCreate` - создание + валидация (slug, price, stock, image_url)
+- `ProductUpdate` - обновление (все поля optional)
+- `ProductResponse` - ответ API
+- `ProductWithCategory` - с вложенной категорией
+- `ProductShort` - краткая версия
+
+**Валидаторы (app/utils/validators.py):**
+```python
+validate_slug(slug: str) -> str
+  # Только lowercase, цифры, дефисы
+  # Регулярка: ^[a-z0-9]+(?:-[a-z0-9]+)*$
+
+validate_url(url: str) -> str
+  # Проверка схемы (http/https) и домена
+
+validate_positive_decimal(value: Decimal) -> Decimal
+  # value > 0
+
+validate_non_negative_int(value: int) -> int
+  # value >= 0
+```
+
+---
+
+### Repositories
+
+**CategoryRepository (app/repositories/category.py):**
+
+Базовые CRUD + специфичные методы:
+- `get_by_slug(slug)` - поиск по slug
+- `slug_exists(slug, exclude_id)` - проверка уникальности
+- `get_by_parent(parent_id)` - получить подкатегории
+- `get_root_categories()` - корневые категории (parent_id IS NULL)
+- `get_active_categories()` - только активные
+- `name_exists_in_parent(name, parent_id)` - уникальность в рамках parent
+
+**ProductRepository (app/repositories/product.py):**
+
+Базовые CRUD + E-commerce методы:
+- `get_by_slug(slug)`, `get_by_sku(sku)` - поиск
+- `slug_exists()`, `sku_exists()` - проверка уникальности
+- `get_by_category(category_id)` - товары категории
+- `get_active_products()` - только активные
+- `search_by_name(term)` - поиск по названию (ILIKE)
+- `get_low_stock_products(threshold)` - низкие остатки
+- `get_out_of_stock_products()` - stock_quantity = 0
+- **`search(...)`** - комплексный поиск с фильтрами:
+  ```python
+  search(
+      search_term="телефон",        # название или описание
+      category_id=uuid,             # фильтр по категории
+      min_price=1000, max_price=5000,  # диапазон цен
+      in_stock_only=True,           # только в наличии
+      active_only=True,             # только активные
+      skip=0, limit=20              # пагинация
+  )
+  ```
+
+---
+
+### Примеры использования
+
+**Работа с категориями:**
+```python
+from app.repositories import CategoryRepository
+from app.models.category import Category
+
+# Создание корневой категории
+electronics = Category(
+    name="Электроника",
+    slug="electronics",
+    description="Электронные устройства",
+    is_active=True
+)
+category = await category_repo.create(electronics)
+
+# Создание подкатегории
+phones = Category(
+    name="Телефоны",
+    slug="phones",
+    parent_id=electronics.id,
+    is_active=True
+)
+await category_repo.create(phones)
+
+# Получение подкатегорий
+children = await category_repo.get_by_parent(electronics.id)
+
+# Проверка slug
+exists = await category_repo.slug_exists("phones")
+```
+
+**Работа с продуктами:**
+```python
+from app.repositories import ProductRepository
+from app.models.product import Product
+from decimal import Decimal
+
+# Создание продукта
+iphone = Product(
+    name="iPhone 15 Pro",
+    slug="iphone-15-pro",
+    description="Флагманский смартфон Apple",
+    price=Decimal("99999.00"),
+    category_id=phones_id,
+    stock_quantity=50,
+    sku="APL-IPH15P-256",
+    image_url="https://cdn.example.com/iphone15.jpg",
+    is_active=True
+)
+product = await product_repo.create(iphone)
+
+# Комплексный поиск
+results = await product_repo.search(
+    search_term="iPhone",
+    category_id=phones_id,
+    min_price=50000,
+    max_price=150000,
+    in_stock_only=True,
+    active_only=True,
+    skip=0,
+    limit=20
+)
+
+# Товары с низким остатком
+low_stock = await product_repo.get_low_stock_products(threshold=10)
+```
+
+---
+
 ## Следующие шаги (roadmap)
 
-- [ ] Products module (модель, CRUD, endpoints)
-- [ ] Categories module (иерархия категорий)
+- [x] **Categories module** - модель, schemas, repositories ✅
+- [x] **Products module** - модель, schemas, repositories ✅
+- [ ] Category & Product Services (бизнес-логика)
+- [ ] Category & Product API endpoints (CRUD операции)
 - [ ] Orders module (корзина, заказы, статусы)
 - [ ] Redis cache (для частых запросов)
 - [ ] Rate limiting (защита от abuse)
