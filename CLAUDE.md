@@ -120,11 +120,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 app/
 ├── api/
 │   ├── dependencies/
-│   │   └── auth.py              # get_current_user, require_role, require_admin
+│   │   ├── auth.py              # get_current_user, require_role, require_admin
+│   │   └── services.py          # get_category_service, get_product_service
 │   └── v1/
 │       ├── router.py            # Главный роутер API v1
 │       ├── auth.py              # Auth endpoints
-│       └── users.py             # Users endpoints
+│       ├── users.py             # Users endpoints
+│       ├── categories.py        # Category endpoints
+│       └── products.py          # Product endpoints
 ├── core/
 │   ├── config.py                # Pydantic v2 settings
 │   ├── database.py              # AsyncSession, get_db()
@@ -147,9 +150,12 @@ app/
 │   ├── user.py                  # User Pydantic schemas
 │   ├── auth.py                  # Auth Pydantic schemas (AuthResponse!)
 │   ├── category.py              # Category Pydantic schemas
-│   └── product.py               # Product Pydantic schemas
+│   ├── product.py               # Product Pydantic schemas
+│   └── common.py                # MessageResponse (общие схемы)
 ├── services/
-│   └── auth_service.py          # AuthService (БЕЗ commit!)
+│   ├── auth_service.py          # AuthService (БЕЗ commit!)
+│   ├── category_service.py      # CategoryService (БЕЗ commit!)
+│   └── product_service.py       # ProductService (БЕЗ commit!)
 ├── utils/
 │   └── validators.py            # Validators (password, slug, URL, decimal, int)
 └── main.py                      # FastAPI app
@@ -219,13 +225,28 @@ alembic/
   - search (комплексный поиск с фильтрами: название, категория, цена, наличие)
 
 ### ✅ Services
-- AuthService (register, login, refresh_tokens, logout, logout_all_devices, change_password)
+- **AuthService** (register, login, refresh_tokens, logout, logout_all_devices, change_password)
+- **CategoryService** (create, update, delete, get_by_id, get_by_slug, get_root, get_subcategories, circular dependency detection)
+- **ProductService** (create, update, delete, get_by_id/slug/sku, search, stock management: increase/decrease/update)
 - **БЕЗ commit/rollback** - транзакции управляются в get_db()
 
 ### ✅ API Endpoints
-- Dependencies (get_current_user, get_current_active_user, require_role)
-- Auth endpoints (register, login, refresh, logout, logout-all)
-- Users endpoints (GET /me, PATCH /me, POST /me/change-password, admin endpoints)
+- **Dependencies**:
+  - Auth: get_current_user, get_current_active_user, require_role, require_admin
+  - Services: get_category_service, get_product_service (Depends injection)
+- **Auth endpoints** (/api/v1/auth):
+  - POST /register, /login, /refresh, /logout, /logout-all
+- **Users endpoints** (/api/v1/users):
+  - GET /me, PATCH /me, POST /me/change-password
+  - GET /{user_id}, GET / (admin endpoints)
+- **Category endpoints** (/api/v1/categories):
+  - POST / (admin), GET /, GET /{id}, GET /slug/{slug}
+  - GET /{id}/subcategories, PATCH /{id} (admin), DELETE /{id} (admin)
+- **Product endpoints** (/api/v1/products):
+  - POST / (admin), GET /search, GET /low-stock (admin)
+  - GET /{id}, GET /slug/{slug}, GET /sku/{sku}
+  - PATCH /{id} (admin), DELETE /{id} (admin)
+  - POST /{id}/stock/increase (admin), POST /{id}/stock/decrease (admin)
 
 ### ✅ Tests
 - conftest.py с fixtures (db_session, client, test_user, test_admin, auth_headers)
@@ -426,7 +447,7 @@ async def get_user(db: AsyncSession, user_id: uuid.UUID):
 
 ---
 
-## API Endpoints
+## API Endpoints (краткий список)
 
 ### Auth (`/api/v1/auth`)
 - `POST /register` → AuthResponse (user + tokens)
@@ -441,6 +462,29 @@ async def get_user(db: AsyncSession, user_id: uuid.UUID):
 - `POST /me/change-password` → MessageResponse
 - `GET /{user_id}` → UserResponse (только admin)
 - `GET /` → list[UserResponse] (список, только admin, пагинация)
+
+### Categories (`/api/v1/categories`)
+- `POST /` → CategoryResponse (создать, admin)
+- `GET /` → list[CategoryResponse] (корневые, pagination)
+- `GET /{id}` → CategoryResponse
+- `GET /slug/{slug}` → CategoryResponse
+- `GET /{id}/subcategories` → list[CategoryResponse]
+- `PATCH /{id}` → CategoryResponse (обновить, admin)
+- `DELETE /{id}` → MessageResponse (удалить, admin)
+
+### Products (`/api/v1/products`)
+- `POST /` → ProductResponse (создать, admin)
+- `GET /search` → list[ProductResponse] (поиск с фильтрами)
+- `GET /low-stock` → list[ProductResponse] (низкие остатки, admin)
+- `GET /{id}` → ProductResponse
+- `GET /slug/{slug}` → ProductResponse
+- `GET /sku/{sku}` → ProductResponse
+- `PATCH /{id}` → ProductResponse (обновить, admin)
+- `DELETE /{id}` → MessageResponse (удалить, admin)
+- `POST /{id}/stock/increase` → ProductResponse (admin)
+- `POST /{id}/stock/decrease` → ProductResponse (admin)
+
+**Полная документация endpoints с таблицами и примерами:** см. раздел "API Endpoints с Dependency Injection"
 
 ---
 
@@ -761,12 +805,167 @@ low_stock = await product_repo.get_low_stock_products(threshold=10)
 
 ---
 
+### Services (Бизнес-логика)
+
+**CategoryService (app/services/category_service.py):**
+
+Методы:
+- `create_category(data)` - создание с валидацией:
+  - Проверка уникальности slug
+  - Проверка уникальности name в рамках parent
+  - Проверка существования parent категории
+- `update_category(id, data)` - обновление с валидацией:
+  - Проверка уникальности при изменении slug/name
+  - Защита от установки самой себя как parent
+  - **Проверка циклических зависимостей** (алгоритм обхода вверх по иерархии)
+- `delete_category(id)` - soft delete с cascade (удаление всех подкатегорий)
+- `get_category(id)` - получение по ID
+- `get_category_by_slug(slug)` - получение по slug
+- `get_root_categories(skip, limit)` - корневые категории с пагинацией
+- `get_subcategories(parent_id, skip, limit)` - подкатегории с пагинацией
+
+**Особенности:**
+```python
+async def _creates_circular_dependency(
+    self, category_id: uuid.UUID, new_parent_id: uuid.UUID
+) -> bool:
+    """
+    Проходит вверх по иерархии от new_parent_id
+    и проверяет, не встретится ли category_id на пути.
+    Защита от создания циклов: A → B → C → A
+    """
+    current_id = new_parent_id
+    while current_id:
+        if current_id == category_id:
+            return True
+        current_category = await self.category_repo.get_by_id(current_id)
+        if not current_category:
+            break
+        current_id = current_category.parent_id
+    return False
+```
+
+**ProductService (app/services/product_service.py):**
+
+Методы:
+- `create_product(data)` - создание с валидацией:
+  - Проверка существования категории
+  - Проверка уникальности slug
+  - Проверка уникальности SKU (если указан)
+- `update_product(id, data)` - обновление с валидацией
+- `delete_product(id)` - soft delete
+- `get_product(id)`, `get_product_by_slug(slug)`, `get_product_by_sku(sku)`
+- **Stock Management** (управление остатками):
+  - `update_stock(id, quantity_delta)` - базовый метод (может быть ±)
+  - `increase_stock(id, quantity)` - поступление товара (валидация > 0)
+  - `decrease_stock(id, quantity)` - продажа/резервирование (валидация остатков)
+- `search_products(...)` - комплексный поиск с фильтрами
+- `get_low_stock_products(threshold)` - мониторинг остатков
+
+**Stock Management пример:**
+```python
+# Увеличение остатка
+await product_service.increase_stock(product_id, quantity=100)
+
+# Уменьшение с проверкой
+try:
+    await product_service.decrease_stock(product_id, quantity=5)
+except HTTPException as e:
+    # 400: Недостаточно товара на складе
+    print(e.detail)
+```
+
+**ВАЖНО:** Сервисы НЕ делают commit/rollback - транзакции управляются в `get_db()`!
+
+---
+
+### API Endpoints с Dependency Injection
+
+**Dependency Pattern (BEST PRACTICE):**
+
+```python
+# app/api/dependencies/services.py
+from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.database import get_db
+from app.services.category_service import CategoryService
+
+def get_category_service(db: AsyncSession = Depends(get_db)) -> CategoryService:
+    """Dependency для инжекции CategoryService"""
+    return CategoryService(db)
+
+# Использование в endpoints:
+@router.post("/categories")
+async def create_category(
+    data: CategoryCreate,
+    service: CategoryService = Depends(get_category_service),  # ✅ ПРАВИЛЬНО
+    _: User = Depends(require_admin),
+) -> CategoryResponse:
+    return await service.create_category(data)
+```
+
+**НЕ делай так:**
+```python
+# ❌ НЕПРАВИЛЬНО - создание вручную в endpoint
+@router.post("/categories")
+async def create_category(
+    data: CategoryCreate,
+    db: AsyncSession = Depends(get_db),
+) -> CategoryResponse:
+    service = CategoryService(db)  # ❌ Плохая практика
+    return await service.create_category(data)
+```
+
+**Category Endpoints (/api/v1/categories):**
+
+| Method | Path | Description | Auth | Response |
+|--------|------|-------------|------|----------|
+| POST | / | Создать категорию | Admin | CategoryResponse |
+| GET | / | Корневые категории (pagination) | Public | list[CategoryResponse] |
+| GET | /{id} | Получить по ID | Public | CategoryResponse |
+| GET | /slug/{slug} | Получить по slug | Public | CategoryResponse |
+| GET | /{id}/subcategories | Подкатегории (pagination) | Public | list[CategoryResponse] |
+| PATCH | /{id} | Обновить категорию | Admin | CategoryResponse |
+| DELETE | /{id} | Удалить (soft delete + cascade) | Admin | MessageResponse |
+
+**Product Endpoints (/api/v1/products):**
+
+| Method | Path | Description | Auth | Response |
+|--------|------|-------------|------|----------|
+| POST | / | Создать продукт | Admin | ProductResponse |
+| GET | /search | Комплексный поиск с фильтрами | Public | list[ProductResponse] |
+| GET | /low-stock | Продукты с низким остатком | Admin | list[ProductResponse] |
+| GET | /{id} | Получить по ID | Public | ProductResponse |
+| GET | /slug/{slug} | Получить по slug | Public | ProductResponse |
+| GET | /sku/{sku} | Получить по SKU | Public | ProductResponse |
+| PATCH | /{id} | Обновить продукт | Admin | ProductResponse |
+| DELETE | /{id} | Удалить (soft delete) | Admin | MessageResponse |
+| POST | /{id}/stock/increase | Увеличить остаток | Admin | ProductResponse |
+| POST | /{id}/stock/decrease | Уменьшить остаток | Admin | ProductResponse |
+
+**Пример GET /products/search:**
+```http
+GET /api/v1/products/search?search_term=iPhone&category_id=uuid&min_price=50000&max_price=150000&in_stock_only=true&skip=0&limit=20
+```
+
+Query параметры:
+- `search_term` (optional) - поиск по названию/описанию (ILIKE)
+- `category_id` (optional) - фильтр по категории
+- `min_price`, `max_price` (optional) - диапазон цен
+- `in_stock_only` (boolean, default: false) - только в наличии
+- `active_only` (boolean, default: true) - только активные
+- `skip`, `limit` - пагинация (limit max 100)
+
+**Auth защита:**
+- Public endpoints - доступны всем
+- Admin endpoints - требуют `require_admin` dependency (проверка role == ADMIN)
+
+---
+
 ## Следующие шаги (roadmap)
 
-- [x] **Categories module** - модель, schemas, repositories ✅
-- [x] **Products module** - модель, schemas, repositories ✅
-- [ ] Category & Product Services (бизнес-логика)
-- [ ] Category & Product API endpoints (CRUD операции)
+- [x] **Categories module** - модель, schemas, repositories, services, API endpoints ✅
+- [x] **Products module** - модель, schemas, repositories, services, API endpoints ✅
 - [ ] Orders module (корзина, заказы, статусы)
 - [ ] Redis cache (для частых запросов)
 - [ ] Rate limiting (защита от abuse)

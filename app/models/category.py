@@ -43,6 +43,7 @@ class Category(BaseModel):
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
+        default=True,
         server_default="true",
     )
 

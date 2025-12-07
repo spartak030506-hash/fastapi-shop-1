@@ -6,7 +6,12 @@
       "Bash(git commit:*)",
       "mcp__context7__get-library-docs",
       "mcp__context7__resolve-library-id",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(alembic revision:*)",
+      "Bash(alembic current:*)",
+      "Bash(alembic downgrade:*)",
+      "Bash(alembic upgrade:*)",
+      "Bash(python check_schema.py:*)"
     ],
     "deny": [],
     "ask": []
