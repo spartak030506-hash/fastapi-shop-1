@@ -11,7 +11,9 @@
       "Bash(alembic current:*)",
       "Bash(alembic downgrade:*)",
       "Bash(alembic upgrade:*)",
-      "Bash(python check_schema.py:*)"
+      "Bash(python check_schema.py:*)",
+      "Bash(mkdir:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []
