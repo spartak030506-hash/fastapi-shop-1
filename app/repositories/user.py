@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User, UserRole
@@ -141,6 +141,52 @@ class UserRepository(BaseRepository[User]):
             User.is_verified == True,
             User.is_deleted == False
         )
+
+        query = query.offset(skip).limit(limit)
+        result = await self.db.execute(query)
+        return list(result.scalars().all())
+
+    async def get_filtered_users(
+        self,
+        skip: int = 0,
+        limit: int = 100,
+        is_active: bool | None = None,
+        role: UserRole | None = None,
+        search: str | None = None,
+    ) -> list[User]:
+        """
+        Получить пользователей с фильтрацией.
+
+        Args:
+            skip: Количество записей для пропуска
+            limit: Максимальное количество записей
+            is_active: Фильтр по статусу активности (опционально)
+            role: Фильтр по роли (опционально)
+            search: Поиск по email, first_name, last_name (опционально, регистронезависимый)
+
+        Returns:
+            Список пользователей, соответствующих фильтрам
+        """
+        query = select(User).where(User.is_deleted == False)
+
+        # Фильтр по is_active
+        if is_active is not None:
+            query = query.where(User.is_active == is_active)
+
+        # Фильтр по role
+        if role is not None:
+            query = query.where(User.role == role)
+
+        # Поиск по email, first_name, last_name
+        if search:
+            search_term = f"%{search}%"
+            query = query.where(
+                or_(
+                    User.email.ilike(search_term),
+                    User.first_name.ilike(search_term),
+                    User.last_name.ilike(search_term),
+                )
+            )
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)

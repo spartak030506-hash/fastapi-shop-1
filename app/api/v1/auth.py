@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, status, Request
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.services.auth_service import AuthService
 from app.schemas.auth import (
     RegisterRequest,
@@ -12,6 +10,7 @@ from app.schemas.auth import (
     AuthResponse,
 )
 from app.api.dependencies import get_current_active_user
+from app.api.dependencies.services import get_auth_service
 from app.models.user import User
 
 
@@ -32,14 +31,13 @@ def get_device_info(request: Request) -> str:
 async def register(
     data: RegisterRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> AuthResponse:
     """
     Регистрация нового пользователя.
 
     Возвращает пользователя и пару токенов (access + refresh).
     """
-    service = AuthService(db)
     device_info = get_device_info(request)
 
     user, tokens = await service.register(data, device_info)
@@ -56,14 +54,13 @@ async def register(
 async def login(
     data: LoginRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> AuthResponse:
     """
     Аутентификация пользователя по email и паролю.
 
     Возвращает пользователя и пару токенов (access + refresh).
     """
-    service = AuthService(db)
     device_info = get_device_info(request)
 
     user, tokens = await service.login(data, device_info)
@@ -80,14 +77,13 @@ async def login(
 async def refresh_tokens(
     data: RefreshTokenRequest,
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> TokenResponse:
     """
     Обновление пары токенов по refresh токену.
 
     Старый refresh токен отзывается, выдаётся новая пара.
     """
-    service = AuthService(db)
     device_info = get_device_info(request)
 
     tokens = await service.refresh_tokens(data.refresh_token, device_info)
@@ -103,14 +99,13 @@ async def refresh_tokens(
 )
 async def logout(
     data: RefreshTokenRequest,
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> MessageResponse:
     """
     Отзыв refresh токена (выход на текущем устройстве).
 
     Access токен продолжит работать до истечения срока действия.
     """
-    service = AuthService(db)
     await service.logout(data.refresh_token)
 
     return MessageResponse(message="Successfully logged out")
@@ -124,14 +119,13 @@ async def logout(
 )
 async def logout_all_devices(
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> MessageResponse:
     """
     Отзыв всех refresh токенов пользователя.
 
     Требуется аутентификация (Bearer token).
     """
-    service = AuthService(db)
     count = await service.logout_all_devices(current_user.id)
 
     return MessageResponse(message=f"Logged out from {count} device(s)")

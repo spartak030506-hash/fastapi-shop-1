@@ -15,6 +15,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Правила работы с Claude Code
+
+### Запуск тестов
+
+**ВАЖНО:** Claude НЕ запускает тесты самостоятельно, если пользователь явно не попросил об этом.
+
+**Причина:** Запуск тестов через pytest потребляет много токенов и времени.
+
+**Правило:**
+- ❌ НЕ запускай `pytest` без явного разрешения пользователя
+- ✅ Напиши тесты и попроси пользователя запустить их
+- ✅ После написания тестов скажи: "Тесты готовы. Можешь запустить: `pytest tests/...`"
+
+**Пример:**
+```
+Я написал тесты для AuthService в tests/users/services/test_auth_service.py.
+Можешь запустить их командой:
+pytest tests/users/services/test_auth_service.py -v
+```
+
+---
+
 ## Текущий стек технологий
 
 ### Core
@@ -121,7 +143,7 @@ app/
 ├── api/
 │   ├── dependencies/
 │   │   ├── auth.py              # get_current_user, require_role, require_admin
-│   │   └── services.py          # get_category_service, get_product_service
+│   │   └── services.py          # get_auth_service, get_user_service, get_category_service, get_product_service
 │   └── v1/
 │       ├── router.py            # Главный роутер API v1
 │       ├── auth.py              # Auth endpoints
@@ -154,6 +176,7 @@ app/
 │   └── common.py                # MessageResponse (общие схемы)
 ├── services/
 │   ├── auth_service.py          # AuthService (БЕЗ commit!)
+│   ├── user_service.py          # UserService (БЕЗ commit!)
 │   ├── category_service.py      # CategoryService (БЕЗ commit!)
 │   └── product_service.py       # ProductService (БЕЗ commit!)
 ├── utils/
@@ -161,12 +184,22 @@ app/
 └── main.py                      # FastAPI app
 
 tests/
-├── conftest.py                  # Pytest fixtures (db_session, client, test_user, etc.)
-├── test_api/
-├── test_repositories/
-├── test_security/
-│   └── test_security_functions.py
-└── test_services/
+├── conftest.py                  # Корневой conftest - импортирует все fixtures
+├── shared/                      # Общие компоненты для всех доменов
+│   └── fixtures/
+│       ├── db_fixtures.py       # БД fixtures (setup_database, db_session, event_loop)
+│       └── client_fixtures.py   # HTTP client fixture
+└── users/                       # Домен Users (аутентификация и пользователи)
+    ├── fixtures/
+    │   └── auth_fixtures.py     # Auth fixtures (test_user, test_admin, auth_headers)
+    ├── api/                     # API endpoint tests (будущие)
+    ├── repositories/            # Repository layer tests
+    │   ├── test_user_repository.py
+    │   └── test_refresh_token_repository.py
+    ├── security/                # Security tests
+    │   └── test_security_functions.py
+    └── services/                # Service layer tests
+        └── test_auth_service.py
 
 alembic/
 └── versions/
@@ -208,7 +241,10 @@ alembic/
 
 ### ✅ Repositories (Generic типизация)
 - **BaseRepository[T]** (Generic CRUD, soft delete, type-safe)
-- **UserRepository** (email_exists, get_by_email, get_by_role, get_active_users)
+- **UserRepository**:
+  - email_exists, get_by_email, get_by_role
+  - get_active_users, get_verified_users
+  - **get_filtered_users** (is_active, role, search по email/name)
 - **RefreshTokenRepository** (is_token_valid, revoke_token, revoke_all_user_tokens)
 - **CategoryRepository**:
   - get_by_slug, slug_exists
@@ -225,20 +261,43 @@ alembic/
   - search (комплексный поиск с фильтрами: название, категория, цена, наличие)
 
 ### ✅ Services
-- **AuthService** (register, login, refresh_tokens, logout, logout_all_devices, change_password)
-- **CategoryService** (create, update, delete, get_by_id, get_by_slug, get_root, get_subcategories, circular dependency detection)
-- **ProductService** (create, update, delete, get_by_id/slug/sku, search, stock management: increase/decrease/update)
-- **БЕЗ commit/rollback** - транзакции управляются в get_db()
+
+**Разделение ответственности:**
+
+- **AuthService** - аутентификация и безопасность:
+  - register, login, refresh_tokens
+  - logout, logout_all_devices
+  - change_password (меняет пароль + отзывает все токены)
+  - **delete_user** (отзывает все токены + soft delete) - остается здесь, т.к. связанная операция
+
+- **UserService** - CRUD операции с пользователями:
+  - get_user (получение по ID с валидацией)
+  - update_user (обновление профиля)
+  - list_users (список с фильтрами: is_active, role, search)
+  - Возвращает `UserResponse`, а не ORM объекты
+
+- **CategoryService**:
+  - create, update, delete
+  - get_by_id, get_by_slug, get_root, get_subcategories
+  - circular dependency detection (защита от циклов в иерархии)
+
+- **ProductService**:
+  - create, update, delete
+  - get_by_id/slug/sku, search
+  - stock management: increase/decrease/update
+
+**ВАЖНО:** Все сервисы БЕЗ commit/rollback - транзакции управляются в get_db()
 
 ### ✅ API Endpoints
 - **Dependencies**:
   - Auth: get_current_user, get_current_active_user, require_role, require_admin
-  - Services: get_category_service, get_product_service (Depends injection)
+  - Services: get_auth_service, get_user_service, get_category_service, get_product_service (Depends injection)
 - **Auth endpoints** (/api/v1/auth):
   - POST /register, /login, /refresh, /logout, /logout-all
 - **Users endpoints** (/api/v1/users):
-  - GET /me, PATCH /me, POST /me/change-password
-  - GET /{user_id}, GET / (admin endpoints)
+  - GET /me, PATCH /me, POST /me/change-password, DELETE /me
+  - GET /{user_id}, GET / (admin, с фильтрами: is_active, role, search)
+  - DELETE /{user_id} (admin)
 - **Category endpoints** (/api/v1/categories):
   - POST / (admin), GET /, GET /{id}, GET /slug/{slug}
   - GET /{id}/subcategories, PATCH /{id} (admin), DELETE /{id} (admin)
@@ -248,10 +307,18 @@ alembic/
   - PATCH /{id} (admin), DELETE /{id} (admin)
   - POST /{id}/stock/increase (admin), POST /{id}/stock/decrease (admin)
 
-### ✅ Tests
-- conftest.py с fixtures (db_session, client, test_user, test_admin, auth_headers)
-- test_security_functions.py (unit тесты для hash_password, JWT, SHA-256)
-- Изоляция тестов (create/drop tables на каждый тест)
+### ✅ Tests (организация по доменам)
+- **Структура по доменам**: tests организованы по доменным границам (users, будущие: categories, products)
+- **Shared fixtures** (tests/shared/fixtures/):
+  - db_fixtures.py: setup_database (autouse), db_session, event_loop
+  - client_fixtures.py: HTTP client с переопределением БД
+- **Users domain** (tests/users/):
+  - fixtures/auth_fixtures.py: test_user, test_admin, test_inactive_user, auth_headers
+  - repositories/: тесты UserRepository, RefreshTokenRepository (базовый CRUD + специфичные методы)
+  - security/: unit-тесты security функций (hash_password, JWT, SHA-256)
+  - services/: интеграционные тесты AuthService (@pytest.mark.integration)
+- **Изоляция**: create/drop tables на каждый тест (autouse fixture setup_database)
+- **Маркеры**: @pytest.mark.unit (пропускают БД), @pytest.mark.integration (требуют БД)
 
 ### ✅ Documentation
 - Swagger UI: http://localhost:8000/docs
@@ -411,7 +478,80 @@ def get_user(user_id: uuid.UUID) -> Optional[User]:  # ❌
 
 ---
 
-### 7. Async everywhere
+### 7. Endpoints = "Склейка" (Glue Code)
+
+**КРИТИЧНО:** Endpoints содержат ТОЛЬКО склейку, вся логика в сервисах.
+
+**Правильный паттерн:**
+```python
+@router.get("/{user_id}")
+async def get_user_by_id(
+    user_id: UUID,  # ✅ FastAPI автоматически валидирует UUID
+    service: UserService = Depends(get_user_service),  # ✅ DI
+    _: User = Depends(require_admin),  # ✅ Авторизация
+) -> UserResponse:
+    """
+    Получить пользователя по ID.
+
+    Требуется роль ADMIN.
+    """
+    return await service.get_user(user_id)  # ✅ Вся логика в сервисе
+```
+
+**Что остается в endpoints:**
+- ✅ Получение параметров (path, query, body)
+- ✅ Dependency Injection (сервисы, auth)
+- ✅ Вызов метода сервиса
+- ✅ Возврат response model
+
+**Что УБРАТЬ из endpoints:**
+- ❌ `db: AsyncSession = Depends(get_db)` - используй сервис
+- ❌ `repo = UserRepository(db)` - репозитории только в сервисах
+- ❌ `try: uuid.UUID(...) except ValueError` - валидация в сервисе или FastAPI
+- ❌ `if not user: raise HTTPException` - бизнес-логика в сервисе
+- ❌ Любые проверки, валидации, создание объектов
+
+**Плохой пример (ДО):**
+```python
+@router.get("/{user_id}")
+async def get_user_by_id(
+    user_id: str,  # ❌ str вместо UUID
+    db: AsyncSession = Depends(get_db),  # ❌ Прямой доступ к БД
+    _: User = Depends(require_admin),
+) -> UserResponse:
+    # ❌ Валидация UUID в endpoint
+    try:
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+
+    # ❌ Создание репозитория в endpoint
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_id(user_uuid)
+
+    # ❌ Проверка существования в endpoint
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse.model_validate(user)
+```
+
+**Хороший пример (ПОСЛЕ):**
+```python
+@router.get("/{user_id}")
+async def get_user_by_id(
+    user_id: UUID,  # ✅ FastAPI валидирует автоматически
+    service: UserService = Depends(get_user_service),  # ✅ DI
+    _: User = Depends(require_admin),
+) -> UserResponse:
+    return await service.get_user(user_id)  # ✅ Вся логика в сервисе
+```
+
+**Reference:** `app/api/v1/users.py` - эталонные endpoints
+
+---
+
+### 8. Async everywhere
 
 **Используй:**
 ```python
@@ -421,6 +561,49 @@ async def get_user(db: AsyncSession, user_id: uuid.UUID):
 ```
 
 **НЕ используй:** sync функции для работы с БД
+
+---
+
+### 9. Сервисы возвращают Pydantic Schemas
+
+**ВАЖНО:** Сервисы возвращают Pydantic schemas (`UserResponse`), а НЕ ORM объекты (`User`).
+
+**Правильно:**
+```python
+# app/services/user_service.py
+class UserService:
+    async def get_user(self, user_id: UUID) -> UserResponse:  # ✅ Pydantic
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return UserResponse.model_validate(user)  # ✅ Конвертация в schema
+
+    async def list_users(self, ...) -> list[UserResponse]:  # ✅ Pydantic list
+        users = await self.user_repo.get_filtered_users(...)
+        return [UserResponse.model_validate(u) for u in users]  # ✅
+```
+
+**Неправильно:**
+```python
+# ❌ ПЛОХО - возвращает ORM
+class UserService:
+    async def get_user(self, user_id: UUID) -> User:  # ❌ ORM объект
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise HTTPException(...)
+        return user  # ❌ Возвращаем ORM напрямую
+```
+
+**Почему важно:**
+1. **Консистентность** - endpoints получают готовые schemas
+2. **Отделение слоёв** - ORM остаётся в repository layer
+3. **Безопасность** - schemas контролируют, что отдаётся в API
+4. **Иммутабельность** - response schemas frozen, нельзя случайно изменить
+
+**Reference:**
+- `app/services/user_service.py` - эталонная реализация
+- `app/services/product_service.py` - тоже правильно
+- `app/services/auth_service.py` - возвращает `UserResponse` + `TokenResponse`
 
 ---
 
@@ -519,11 +702,23 @@ pytest -v
 # С покрытием
 pytest --cov=app --cov-report=html
 
-# Конкретный файл
-pytest tests/test_security/test_security_functions.py -v
+# Конкретный домен
+pytest tests/users/ -v
 
-# С маркерами
-pytest -m unit -v
+# Конкретный слой в домене
+pytest tests/users/repositories/ -v
+pytest tests/users/services/ -v
+pytest tests/users/security/ -v
+
+# Конкретный файл
+pytest tests/users/security/test_security_functions.py -v
+
+# По маркерам
+pytest -m unit -v           # Только unit-тесты (без БД)
+pytest -m integration -v    # Только интеграционные тесты (с БД)
+
+# Комбинации
+pytest tests/users/ -m integration -v
 ```
 
 ### Проверка
@@ -586,9 +781,144 @@ mypy app
    alembic upgrade head
    ```
 
-8. **Напиши тесты** (`tests/test_api/test_products.py`)
+8. **Напиши тесты** (организация по доменам, см. ниже)
 
 **Reference implementation:** Auth module (user.py, auth_service.py, auth.py)
+
+---
+
+## Организация тестов по доменам
+
+**Принцип**: Тесты организованы по доменным границам (users, categories, products, orders).
+
+### Структура домена
+
+Для нового домена (например, `products`) создай:
+
+```
+tests/
+├── shared/                      # Уже существует
+│   └── fixtures/
+│       ├── db_fixtures.py
+│       └── client_fixtures.py
+└── products/                    # Новый домен
+    ├── __init__.py
+    ├── fixtures/
+    │   ├── __init__.py
+    │   └── product_fixtures.py  # Domain-specific fixtures
+    ├── api/
+    │   ├── __init__.py
+    │   └── test_products_api.py
+    ├── repositories/
+    │   ├── __init__.py
+    │   └── test_product_repository.py
+    └── services/
+        ├── __init__.py
+        └── test_product_service.py
+```
+
+### Шаги создания тестов для нового домена
+
+1. **Создай структуру папок**:
+   ```bash
+   mkdir tests/products
+   mkdir tests/products/fixtures
+   mkdir tests/products/api
+   mkdir tests/products/repositories
+   mkdir tests/products/services
+   ```
+
+2. **Создай fixtures** (`tests/products/fixtures/product_fixtures.py`):
+   ```python
+   import pytest
+   from app.models.product import Product
+   from decimal import Decimal
+
+   @pytest.fixture
+   async def test_product(db_session, test_category):
+       """Создаёт тестовый продукт в БД"""
+       product = Product(
+           name="Test Product",
+           slug="test-product",
+           price=Decimal("100.00"),
+           category_id=test_category.id,
+           stock_quantity=10,
+       )
+       db_session.add(product)
+       await db_session.commit()
+       await db_session.refresh(product)
+       return product
+   ```
+
+3. **Импортируй fixtures** в `tests/conftest.py`:
+   ```python
+   from tests.products.fixtures.product_fixtures import *  # noqa
+   ```
+
+4. **Напиши тесты репозитория**:
+   ```python
+   # tests/products/repositories/test_product_repository.py
+   import pytest
+   from app.repositories.product import ProductRepository
+
+   @pytest.mark.integration
+   class TestProductRepository:
+       async def test_get_by_slug(self, db_session, test_product):
+           repo = ProductRepository(db_session)
+           result = await repo.get_by_slug(test_product.slug)
+           assert result is not None
+           assert result.id == test_product.id
+   ```
+
+5. **Напиши тесты сервиса**:
+   ```python
+   # tests/products/services/test_product_service.py
+   import pytest
+   from app.services.product_service import ProductService
+
+   @pytest.mark.integration
+   class TestProductService:
+       async def test_increase_stock(self, db_session, test_product):
+           service = ProductService(db_session)
+           updated = await service.increase_stock(test_product.id, 5)
+           assert updated.stock_quantity == 15
+   ```
+
+6. **Напиши тесты API** (когда endpoints готовы):
+   ```python
+   # tests/products/api/test_products_api.py
+   import pytest
+   from httpx import AsyncClient
+
+   @pytest.mark.integration
+   class TestProductsAPI:
+       async def test_get_product_by_slug(self, client: AsyncClient, test_product):
+           response = await client.get(f"/api/v1/products/slug/{test_product.slug}")
+           assert response.status_code == 200
+           assert response.json()["slug"] == test_product.slug
+   ```
+
+### Правила организации
+
+1. **Маркеры**:
+   - `@pytest.mark.unit` - для unit-тестов (не требуют БД, быстрые)
+   - `@pytest.mark.integration` - для интеграционных тестов (требуют БД)
+
+2. **Fixtures**:
+   - **Shared fixtures** (db_session, client) → `tests/shared/fixtures/`
+   - **Domain-specific fixtures** (test_product, test_category) → `tests/{domain}/fixtures/`
+
+3. **Именование**:
+   - Файлы тестов: `test_*.py`
+   - Классы тестов: `Test{ComponentName}` (например, `TestProductRepository`)
+   - Методы тестов: `test_{what_it_tests}` (например, `test_get_by_slug_returns_product`)
+
+4. **Изоляция**:
+   - Каждый тест получает чистую БД (setup_database fixture autouse)
+   - Не полагайся на порядок выполнения тестов
+   - Создавай все необходимые данные через fixtures
+
+5. **Reference implementation**: `tests/users/` - эталонная структура доменных тестов
 
 ---
 
@@ -975,13 +1305,35 @@ Query параметры:
 
 ---
 
-## Помни
+## Помни - Golden Rules
 
-✅ Production-ready код с best practices
-✅ Современный стек (SQLAlchemy 2.0, Pydantic v2, async)
-✅ Никаких commit в сервисах
-✅ Явные response schemas (НЕ dict)
-✅ Generic типизация где возможно
-✅ datetime.now(timezone.utc) (НЕ datetime.utcnow!)
-✅ Тесты для всего нового функционала
-✅ Минимализм + полнота
+### Архитектура
+✅ **3 слоя:** API (склейка) → Service (логика) → Repository (данные)
+✅ **Endpoints = склейка:** только DI + вызов сервиса + return
+✅ **Сервисы БЕЗ commit/rollback** - управляется в get_db()
+✅ **Сервисы возвращают Pydantic schemas**, не ORM
+✅ **Dependency Injection:** get_auth_service, get_user_service, etc.
+
+### Код
+✅ **SQLAlchemy 2.0:** Mapped, mapped_column, lazy="selectin"
+✅ **Pydantic v2:** ConfigDict, frozen=True, from_attributes=True
+✅ **Type hints:** User | None, list[User] (PEP 604, 585)
+✅ **Datetime:** datetime.now(timezone.utc) - НЕ utcnow()!
+✅ **Generic:** BaseRepository[T], type-safe
+
+### Безопасность
+✅ **JWT:** разные секреты (SECRET_KEY, REFRESH_TOKEN_SECRET)
+✅ **Refresh tokens:** SHA-256 в БД, 7 дней
+✅ **Soft delete:** is_deleted везде
+✅ **UUID:** для всех ID
+
+### Тесты
+✅ **По доменам:** tests/{domain}/{layer}/
+✅ **Изоляция:** create/drop tables на каждый тест
+✅ **Маркеры:** @pytest.mark.unit, @pytest.mark.integration
+✅ **Не запускать без разрешения пользователя**
+
+### Минимализм
+✅ **Не over-engineer:** только то, что попросили
+✅ **Полнота блока:** функционал делаем до конца
+✅ **Production-ready:** никаких TODO, заглушек, устаревших решений

@@ -1,14 +1,13 @@
 import uuid as uuid_module
 from fastapi import APIRouter, Depends, status, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.services.auth_service import AuthService
-from app.repositories.user import UserRepository
+from app.services.user_service import UserService
 from app.schemas.user import UserResponse, UserUpdate, UserPasswordChange
 from app.schemas.common import MessageResponse
 from app.api.dependencies import get_current_active_user, require_admin
-from app.models.user import User
+from app.api.dependencies.services import get_auth_service, get_user_service
+from app.models.user import User, UserRole
 
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -40,22 +39,15 @@ async def get_my_profile(
 async def update_my_profile(
     data: UserUpdate,
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    service: UserService = Depends(get_user_service),
 ) -> UserResponse:
     """
     Обновить данные своего профиля (имя, фамилия, телефон).
 
     Требуется аутентификация (Bearer token).
     """
-    user_repo = UserRepository(db)
-
-    # Обновляем только переданные поля
     update_data = data.model_dump(exclude_unset=True)
-    if update_data:
-        updated_user = await user_repo.update(current_user.id, **update_data)
-        return UserResponse.model_validate(updated_user)
-
-    return UserResponse.model_validate(current_user)
+    return await service.update_user(current_user.id, **update_data)
 
 
 @router.post(
@@ -67,7 +59,7 @@ async def update_my_profile(
 async def change_password(
     data: UserPasswordChange,
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> MessageResponse:
     """
     Сменить пароль.
@@ -77,7 +69,6 @@ async def change_password(
 
     Требуется аутентификация (Bearer token).
     """
-    service = AuthService(db)
     await service.change_password(
         current_user.id,
         data.old_password,
@@ -95,7 +86,7 @@ async def change_password(
 )
 async def delete_my_account(
     current_user: User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_db),
+    service: AuthService = Depends(get_auth_service)
 ) -> MessageResponse:
     """
     Удалить свой аккаунт (soft delete).
@@ -103,7 +94,6 @@ async def delete_my_account(
     После удаления все refresh токены будут отозваны.
     Требуется аутентификация (Bearer token).
     """
-    service = AuthService(db)
     await service.delete_user(current_user.id)
 
     return MessageResponse(message="Account deleted successfully")
@@ -116,8 +106,8 @@ async def delete_my_account(
     summary="Получить пользователя по ID (только для админов)"
 )
 async def get_user_by_id(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
+    user_id: uuid_module.UUID,
+    service: UserService = Depends(get_user_service),
     _: User = Depends(require_admin),
 ) -> UserResponse:
     """
@@ -125,24 +115,7 @@ async def get_user_by_id(
 
     Требуется роль ADMIN.
     """
-    try:
-        user_uuid = uuid_module.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID format"
-        )
-
-    user_repo = UserRepository(db)
-    user = await user_repo.get_by_id(user_uuid)
-
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-
-    return UserResponse.model_validate(user)
+    return await service.get_user(user_id)
 
 
 @router.get(
@@ -154,18 +127,31 @@ async def get_user_by_id(
 async def get_users_list(
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db),
+    is_active: bool | None = None,
+    role: UserRole | None = None,
+    search: str | None = None,
+    service: UserService = Depends(get_user_service),
     _: User = Depends(require_admin),
 ) -> list[UserResponse]:
     """
-    Получить список всех пользователей с пагинацией.
+    Получить список всех пользователей с пагинацией и фильтрацией.
+
+    Query параметры:
+    - skip: Количество записей для пропуска (пагинация)
+    - limit: Максимум записей (max 100)
+    - is_active: Фильтр по статусу активности (опционально)
+    - role: Фильтр по роли (CUSTOMER/ADMIN, опционально)
+    - search: Поиск по email, имени или фамилии (опционально)
 
     Требуется роль ADMIN.
     """
-    user_repo = UserRepository(db)
-    users = await user_repo.get_all(skip=skip, limit=limit)
-
-    return [UserResponse.model_validate(user) for user in users]
+    return await service.list_users(
+        skip=skip,
+        limit=limit,
+        is_active=is_active,
+        role=role,
+        search=search,
+    )
 
 
 @router.delete(
@@ -175,8 +161,8 @@ async def get_users_list(
     summary="Удалить пользователя (только для админов)"
 )
 async def delete_user(
-    user_id: str,
-    db: AsyncSession = Depends(get_db),
+    user_id: uuid_module.UUID,
+    service: AuthService = Depends(get_auth_service),
     current_admin: User = Depends(require_admin),
 ) -> MessageResponse:
     """
@@ -185,22 +171,13 @@ async def delete_user(
     Требуется роль ADMIN.
     Админ не может удалить сам себя через этот endpoint.
     """
-    try:
-        user_uuid = uuid_module.UUID(user_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid user ID format"
-        )
-
     # Проверка: админ не может удалить самого себя
-    if user_uuid == current_admin.id:
+    if user_id == current_admin.id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="You cannot delete yourself. Use DELETE /users/me instead"
         )
 
-    service = AuthService(db)
-    await service.delete_user(user_uuid)
+    await service.delete_user(user_id)
 
     return MessageResponse(message="User deleted successfully")
