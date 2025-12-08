@@ -217,7 +217,12 @@ alembic/
 - Database (SQLAlchemy 2.0 async)
 - Security (JWT двойной секрет, bcrypt, SHA-256 для refresh токенов)
 - Config (Pydantic v2 settings с .env)
-- Exceptions (Custom HTTPException классы)
+- **Exceptions** (Доменные исключения + Exception handlers в main.py)
+  - DomainException базовый класс (с status_code и details)
+  - User domain: UserNotFoundError, EmailAlreadyExistsError, InvalidCredentialsError, etc.
+  - Category domain: CategoryNotFoundError, CategorySlugAlreadyExistsError, CircularCategoryDependencyError, etc.
+  - Product domain: ProductNotFoundError, InsufficientStockError, InvalidStockQuantityError, etc.
+  - IntegrityError handler (автоматическая обработка нарушений БД → 409 Conflict)
 - Migrations (Alembic, 4 миграции применены)
 
 ### ✅ Models (SQLAlchemy 2.0)
@@ -604,6 +609,137 @@ class UserService:
 - `app/services/user_service.py` - эталонная реализация
 - `app/services/product_service.py` - тоже правильно
 - `app/services/auth_service.py` - возвращает `UserResponse` + `TokenResponse`
+
+---
+
+### 10. Доменные исключения вместо HTTPException
+
+**КРИТИЧНО:** Сервисы НЕ выбрасывают `HTTPException`, только доменные исключения из `app/core/exceptions.py`.
+
+**Правильно:**
+```python
+from app.core.exceptions import (
+    UserNotFoundError,
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+)
+
+class AuthService:
+    async def register(self, data: RegisterRequest):
+        # ✅ Доменное исключение
+        if await self.user_repo.email_exists(data.email):
+            raise EmailAlreadyExistsError(data.email)
+
+        user = User(...)
+        return await self.user_repo.create(user)
+
+    async def login(self, data: LoginRequest):
+        user = await self.user_repo.get_by_email(data.email)
+
+        # ✅ Доменное исключение
+        if not user or not verify_password(data.password, user.hashed_password):
+            raise InvalidCredentialsError()
+
+        # ✅ Доменное исключение
+        if not user.is_active:
+            raise UserInactiveError(str(user.id))
+
+        return tokens
+```
+
+**Неправильно:**
+```python
+from fastapi import HTTPException, status
+
+class AuthService:
+    async def register(self, data: RegisterRequest):
+        # ❌ HTTPException в сервисе - ПЛОХО!
+        if await self.user_repo.email_exists(data.email):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already exists"
+            )
+```
+
+**Архитектура обработки исключений:**
+
+```
+Сервис (Service Layer)
+    ↓ raise EmailAlreadyExistsError(email)
+
+FastAPI Exception Handlers (app/main.py)
+    ↓ @app.exception_handler(DomainException)
+
+HTTP Response
+    ↓ 409 Conflict + JSON {"detail": "...", "email": "...", "field": "email"}
+```
+
+**Exception Handlers в app/main.py:**
+
+1. **domain_exception_handler** - обрабатывает все доменные исключения:
+```python
+@app.exception_handler(DomainException)
+async def domain_exception_handler(request: Request, exc: DomainException):
+    return JSONResponse(
+        status_code=exc.status_code,  # 404, 409, 400, 401, 403...
+        content={
+            "detail": exc.message,
+            **exc.details,  # Распаковка: email, field, user_id и др.
+        },
+    )
+```
+
+2. **integrity_error_handler** - ловит IntegrityError от SQLAlchemy:
+```python
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    # Парсит тип нарушения: unique_violation, foreign_key_violation, etc.
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": "Database integrity constraint violation",
+            "constraint_type": constraint_type,
+            "error": error_detail,
+        },
+    )
+```
+
+**Доступные доменные исключения:**
+
+**User Domain:**
+- `UserNotFoundError(user_id)` → 404
+- `EmailAlreadyExistsError(email)` → 409
+- `UserInactiveError(user_id)` → 403
+- `InvalidCredentialsError()` → 401
+- `InvalidTokenError(reason)` → 401
+- `TokenExpiredError()` → 401
+- `RefreshTokenNotFoundError()` → 401
+
+**Category Domain:**
+- `CategoryNotFoundError(category_id, slug)` → 404
+- `CategorySlugAlreadyExistsError(slug)` → 409
+- `CategoryNameAlreadyExistsError(name, parent_id)` → 409
+- `CircularCategoryDependencyError(category_id, parent_id)` → 400
+- `CategorySelfParentError(category_id)` → 400
+
+**Product Domain:**
+- `ProductNotFoundError(product_id, slug, sku)` → 404
+- `ProductSlugAlreadyExistsError(slug)` → 409
+- `ProductSKUAlreadyExistsError(sku)` → 409
+- `InsufficientStockError(product_id, requested, available)` → 400
+- `InvalidStockQuantityError(quantity, reason)` → 400
+
+**Преимущества:**
+1. ✅ **Разделение ответственности** - сервисы не знают о HTTP
+2. ✅ **Типизация** - IDE подсказывает, какие исключения может выбросить метод
+3. ✅ **Централизация** - все HTTP-маппинги в одном месте (main.py)
+4. ✅ **Безопасность** - IntegrityError автоматически обрабатывается
+5. ✅ **Детализация** - в ответе есть structured данные (email, field, user_id, etc.)
+
+**Reference:**
+- `app/core/exceptions.py` - все доменные исключения
+- `app/main.py` - exception handlers
+- `app/services/auth_service.py` - пример использования
 
 ---
 
@@ -1194,18 +1330,22 @@ async def _creates_circular_dependency(
 
 **Stock Management пример:**
 ```python
+from app.core.exceptions import InsufficientStockError
+
 # Увеличение остатка
 await product_service.increase_stock(product_id, quantity=100)
 
 # Уменьшение с проверкой
 try:
     await product_service.decrease_stock(product_id, quantity=5)
-except HTTPException as e:
-    # 400: Недостаточно товара на складе
-    print(e.detail)
+except InsufficientStockError as e:
+    # Доменное исключение с детальной информацией
+    print(f"Недостаточно товара: запрошено {e.details['requested']}, доступно {e.details['available']}")
 ```
 
-**ВАЖНО:** Сервисы НЕ делают commit/rollback - транзакции управляются в `get_db()`!
+**ВАЖНО:**
+- Сервисы НЕ делают commit/rollback - транзакции управляются в `get_db()`!
+- Сервисы НЕ выбрасывают HTTPException - только доменные исключения!
 
 ---
 
@@ -1296,6 +1436,7 @@ Query параметры:
 
 - [x] **Categories module** - модель, schemas, repositories, services, API endpoints ✅
 - [x] **Products module** - модель, schemas, repositories, services, API endpoints ✅
+- [x] **Domain Exceptions** - доменные исключения + exception handlers + IntegrityError обработка ✅
 - [ ] Orders module (корзина, заказы, статусы)
 - [ ] Redis cache (для частых запросов)
 - [ ] Rate limiting (защита от abuse)
@@ -1312,6 +1453,8 @@ Query параметры:
 ✅ **Endpoints = склейка:** только DI + вызов сервиса + return
 ✅ **Сервисы БЕЗ commit/rollback** - управляется в get_db()
 ✅ **Сервисы возвращают Pydantic schemas**, не ORM
+✅ **Сервисы выбрасывают доменные исключения**, не HTTPException
+✅ **Exception handlers в main.py** - маппят исключения на HTTP-коды
 ✅ **Dependency Injection:** get_auth_service, get_user_service, etc.
 
 ### Код
@@ -1326,6 +1469,8 @@ Query параметры:
 ✅ **Refresh tokens:** SHA-256 в БД, 7 дней
 ✅ **Soft delete:** is_deleted везде
 ✅ **UUID:** для всех ID
+✅ **IntegrityError:** автоматически обрабатывается → 409 Conflict
+✅ **Доменные исключения:** structured errors с детальной информацией
 
 ### Тесты
 ✅ **По доменам:** tests/{domain}/{layer}/
