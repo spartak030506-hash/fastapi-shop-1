@@ -46,8 +46,7 @@ async def update_my_profile(
 
     Требуется аутентификация (Bearer token).
     """
-    update_data = data.model_dump(exclude_unset=True)
-    return await service.update_user(current_user.id, **update_data)
+    return await service.update_user(current_user.id, data)
 
 
 @router.post(

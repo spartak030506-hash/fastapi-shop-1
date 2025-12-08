@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError
 
 from app.core.security import (
     hash_password,
@@ -65,8 +66,9 @@ class AuthService:
             Кортеж (UserResponse, TokenResponse)
 
         Raises:
-            EmailAlreadyExistsError: Email уже существует
+            EmailAlreadyExistsError: Email уже существует (в т.ч. при race condition)
         """
+        # Предварительная проверка email (оптимизация для обычного случая)
         if await self.user_repo.email_exists(data.email):
             raise EmailAlreadyExistsError(data.email)
 
@@ -79,7 +81,19 @@ class AuthService:
             phone=data.phone,
         )
 
-        user = await self.user_repo.create(user)
+        # Защита от race condition: ловим IntegrityError при создании
+        try:
+            user = await self.user_repo.create(user)
+        except IntegrityError as e:
+            # Проверяем, связана ли ошибка с email constraint
+            # PostgreSQL error: duplicate key value violates unique constraint "users_email_key"
+            error_info = str(e.orig) if hasattr(e, 'orig') else str(e)
+
+            if 'email' in error_info.lower() or 'unique' in error_info.lower():
+                raise EmailAlreadyExistsError(data.email)
+
+            # Если это другой constraint - пробрасываем дальше
+            raise
 
         tokens = await self._create_tokens_for_user(user.id, device_info)
 
@@ -133,24 +147,50 @@ class AuthService:
         Raises:
             InvalidTokenError: Невалидный токен
             RefreshTokenNotFoundError: Токен не найден или истек
+            UserInactiveError: Пользователь неактивен
+            UserNotFoundError: Пользователь удален
         """
+        # Декодирование и валидация токена
         try:
             payload = decode_refresh_token(refresh_token)
-        except Exception:
-            raise InvalidTokenError("Invalid or malformed refresh token")
+            sub = payload.get("sub")
 
-        user_id = uuid.UUID(payload.get("sub"))
+            # Безопасный парсинг user_id из sub
+            if not sub or not isinstance(sub, str):
+                raise InvalidTokenError("Token payload missing or invalid 'sub' field")
+
+            user_id = uuid.UUID(sub)
+        except (ValueError, TypeError) as e:
+            # ValueError - невалидный UUID формат
+            # TypeError - проблемы с типами
+            raise InvalidTokenError(f"Invalid user ID format in token: {str(e)}")
+        except Exception as e:
+            # jwt.InvalidTokenError, jwt.ExpiredSignatureError, jwt.DecodeError
+            raise InvalidTokenError(f"Invalid or expired refresh token: {str(e)}")
+
         token_hash = hash_refresh_token(refresh_token)
 
+        # Проверка существования токена в БД
         db_token = await self.token_repo.get_by_token_hash(token_hash)
         if not db_token or db_token.user_id != user_id:
             raise RefreshTokenNotFoundError()
 
+        # Проверка срока действия токена
         if not await self.token_repo.is_token_valid(token_hash):
             raise RefreshTokenNotFoundError()
 
+        # Проверка статуса пользователя
+        user = await self.user_repo.get_by_id(user_id)
+        if not user:
+            raise UserNotFoundError(str(user_id))
+
+        if not user.is_active:
+            raise UserInactiveError(str(user_id))
+
+        # Отзыв старого токена (rotation)
         await self.token_repo.revoke_token(token_hash)
 
+        # Создание новой пары токенов
         tokens = await self._create_tokens_for_user(user_id, device_info)
 
         return tokens

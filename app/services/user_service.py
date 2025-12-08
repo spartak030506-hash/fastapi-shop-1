@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import UserNotFoundError
 from app.models.user import User, UserRole
 from app.repositories.user import UserRepository
-from app.schemas.user import UserResponse
+from app.schemas.user import UserResponse, UserUpdate
 
 
 class UserService:
@@ -49,14 +49,17 @@ class UserService:
     async def update_user(
         self,
         user_id: uuid.UUID,
-        **update_data
+        update_data: UserUpdate
     ) -> UserResponse:
         """
         Обновить профиль пользователя.
 
         Args:
             user_id: UUID пользователя
-            **update_data: Поля для обновления (first_name, last_name, phone)
+            update_data: Данные для обновления (UserUpdate schema)
+                - first_name: Имя (опционально)
+                - last_name: Фамилия (опционально)
+                - phone: Телефон (опционально)
 
         Returns:
             UserResponse с обновленными данными
@@ -69,9 +72,12 @@ class UserService:
         if not user:
             raise UserNotFoundError(str(user_id))
 
-        # Обновление
-        if update_data:
-            updated_user = await self.user_repo.update(user_id, **update_data)
+        # Получение только установленных полей из schema
+        update_dict = update_data.model_dump(exclude_unset=True)
+
+        # Обновление только если есть изменения
+        if update_dict:
+            updated_user = await self.user_repo.update(user_id, **update_dict)
             return UserResponse.model_validate(updated_user)
 
         return UserResponse.model_validate(user)
