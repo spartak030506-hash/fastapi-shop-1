@@ -1,7 +1,6 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -13,6 +12,14 @@ from app.core.security import (
     hash_refresh_token,
 )
 from app.core.config import settings
+from app.core.exceptions import (
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    UserInactiveError,
+    UserNotFoundError,
+    InvalidTokenError,
+    RefreshTokenNotFoundError,
+)
 from app.models.user import User
 from app.models.refresh_token import RefreshToken
 from app.repositories.user import UserRepository
@@ -58,13 +65,10 @@ class AuthService:
             Кортеж (UserResponse, TokenResponse)
 
         Raises:
-            HTTPException 400: Email уже существует
+            EmailAlreadyExistsError: Email уже существует
         """
         if await self.user_repo.email_exists(data.email):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
+            raise EmailAlreadyExistsError(data.email)
 
         user = User(
             id=uuid.uuid4(),
@@ -97,21 +101,15 @@ class AuthService:
             Кортеж (UserResponse, TokenResponse)
 
         Raises:
-            HTTPException 401: Неверные учетные данные
-            HTTPException 403: Пользователь неактивен
+            InvalidCredentialsError: Неверные учетные данные
+            UserInactiveError: Пользователь неактивен
         """
         user = await self.user_repo.get_by_email(data.email)
         if not user or not verify_password(data.password, user.hashed_password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password"
-            )
+            raise InvalidCredentialsError()
 
         if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is inactive"
-            )
+            raise UserInactiveError(str(user.id))
 
         tokens = await self._create_tokens_for_user(user.id, device_info)
 
@@ -133,31 +131,23 @@ class AuthService:
             TokenResponse с новой парой токенов
 
         Raises:
-            HTTPException 401: Невалидный или истекший токен
+            InvalidTokenError: Невалидный токен
+            RefreshTokenNotFoundError: Токен не найден или истек
         """
         try:
             payload = decode_refresh_token(refresh_token)
         except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+            raise InvalidTokenError("Invalid or malformed refresh token")
 
         user_id = uuid.UUID(payload.get("sub"))
         token_hash = hash_refresh_token(refresh_token)
 
         db_token = await self.token_repo.get_by_token_hash(token_hash)
         if not db_token or db_token.user_id != user_id:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+            raise RefreshTokenNotFoundError()
 
         if not await self.token_repo.is_token_valid(token_hash):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Refresh token expired or revoked"
-            )
+            raise RefreshTokenNotFoundError()
 
         await self.token_repo.revoke_token(token_hash)
 
@@ -173,16 +163,13 @@ class AuthService:
             refresh_token: Refresh токен для отзыва
 
         Raises:
-            HTTPException 401: Невалидный токен
+            RefreshTokenNotFoundError: Невалидный токен
         """
         token_hash = hash_refresh_token(refresh_token)
 
         revoked = await self.token_repo.revoke_token(token_hash)
         if not revoked:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid refresh token"
-            )
+            raise RefreshTokenNotFoundError()
 
     async def logout_all_devices(self, user_id: uuid.UUID) -> int:
         """
@@ -212,21 +199,15 @@ class AuthService:
             new_password: Новый пароль
 
         Raises:
-            HTTPException 401: Неверный старый пароль
-            HTTPException 404: Пользователь не найден
+            InvalidCredentialsError: Неверный старый пароль
+            UserNotFoundError: Пользователь не найден
         """
         user = await self.user_repo.get_by_id(user_id)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+            raise UserNotFoundError(str(user_id))
 
         if not verify_password(old_password, user.hashed_password):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect old password"
-            )
+            raise InvalidCredentialsError()
 
         await self.user_repo.update(
             user_id,
@@ -247,25 +228,17 @@ class AuthService:
             user_id: UUID пользователя
 
         Raises:
-            HTTPException 404: Пользователь не найден
+            UserNotFoundError: Пользователь не найден
         """
         user = await self.user_repo.get_by_id(user_id)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+            raise UserNotFoundError(str(user_id))
 
         # Сначала отзываем все токены
         await self.token_repo.revoke_all_user_tokens(user_id)
 
         # Потом soft delete пользователя
-        deleted = await self.user_repo.soft_delete(user_id)
-        if not deleted:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to delete user"
-            )
+        await self.user_repo.soft_delete(user_id)
 
     async def _create_tokens_for_user(
         self,

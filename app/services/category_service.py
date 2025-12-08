@@ -1,8 +1,14 @@
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import (
+    CategoryNotFoundError,
+    CategorySlugAlreadyExistsError,
+    CategoryNameAlreadyExistsError,
+    CircularCategoryDependencyError,
+    CategorySelfParentError,
+)
 from app.models.category import Category
 from app.repositories.category import CategoryRepository
 from app.schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse
@@ -35,33 +41,23 @@ class CategoryService:
             CategoryResponse: Созданная категория
 
         Raises:
-            HTTPException 409: Slug уже существует
-            HTTPException 409: Имя уже существует в рамках parent
-            HTTPException 404: Родительская категория не найдена
+            CategorySlugAlreadyExistsError: Slug уже существует
+            CategoryNameAlreadyExistsError: Имя уже существует в рамках parent
+            CategoryNotFoundError: Родительская категория не найдена
         """
         # Проверка уникальности slug
         if await self.category_repo.slug_exists(data.slug):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Category with slug '{data.slug}' already exists"
-            )
+            raise CategorySlugAlreadyExistsError(data.slug)
 
         # Проверка уникальности name в рамках parent
         if await self.category_repo.name_exists_in_parent(data.name, data.parent_id):
-            parent_info = f"parent category" if data.parent_id else "root level"
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Category with name '{data.name}' already exists in {parent_info}"
-            )
+            raise CategoryNameAlreadyExistsError(data.name, str(data.parent_id) if data.parent_id else None)
 
         # Проверка существования parent категории
         if data.parent_id:
             parent = await self.category_repo.get_by_id(data.parent_id)
             if not parent:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Parent category with id {data.parent_id} not found"
-                )
+                raise CategoryNotFoundError(category_id=str(data.parent_id))
 
         # Создание категории
         category = Category(
@@ -88,19 +84,16 @@ class CategoryService:
             CategoryResponse: Обновленная категория
 
         Raises:
-            HTTPException 404: Категория не найдена
-            HTTPException 409: Slug уже существует
-            HTTPException 409: Имя уже существует в рамках parent
-            HTTPException 400: Попытка установить саму себя как parent
-            HTTPException 400: Попытка создать циклическую зависимость
+            CategoryNotFoundError: Категория не найдена
+            CategorySlugAlreadyExistsError: Slug уже существует
+            CategoryNameAlreadyExistsError: Имя уже существует в рамках parent
+            CategorySelfParentError: Попытка установить саму себя как parent
+            CircularCategoryDependencyError: Попытка создать циклическую зависимость
         """
         # Получение существующей категории
         category = await self.category_repo.get_by_id(category_id)
         if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with id {category_id} not found"
-            )
+            raise CategoryNotFoundError(category_id=str(category_id))
 
         # Подготовка данных для обновления
         update_data = data.model_dump(exclude_unset=True)
@@ -108,10 +101,7 @@ class CategoryService:
         # Проверка уникальности slug (если меняется)
         if "slug" in update_data and update_data["slug"] != category.slug:
             if await self.category_repo.slug_exists(update_data["slug"], exclude_category_id=category_id):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Category with slug '{update_data['slug']}' already exists"
-                )
+                raise CategorySlugAlreadyExistsError(update_data["slug"])
 
         # Проверка уникальности name в рамках parent (если меняется name или parent_id)
         if "name" in update_data or "parent_id" in update_data:
@@ -123,10 +113,9 @@ class CategoryService:
                 new_parent_id,
                 exclude_category_id=category_id
             ):
-                parent_info = f"parent category {new_parent_id}" if new_parent_id else "root level"
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Category with name '{new_name}' already exists in {parent_info}"
+                raise CategoryNameAlreadyExistsError(
+                    new_name,
+                    str(new_parent_id) if new_parent_id else None
                 )
 
         # Проверка parent_id (если меняется)
@@ -135,25 +124,19 @@ class CategoryService:
 
             # Нельзя установить саму себя как parent
             if new_parent_id == category_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Category cannot be its own parent"
-                )
+                raise CategorySelfParentError(str(category_id))
 
             # Проверка существования parent
             if new_parent_id:
                 parent = await self.category_repo.get_by_id(new_parent_id)
                 if not parent:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"Parent category with id {new_parent_id} not found"
-                    )
+                    raise CategoryNotFoundError(category_id=str(new_parent_id))
 
                 # Проверка на циклическую зависимость
                 if await self._creates_circular_dependency(category_id, new_parent_id):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Cannot create circular dependency in category hierarchy"
+                    raise CircularCategoryDependencyError(
+                        str(category_id),
+                        str(new_parent_id)
                     )
 
         # Обновление категории
@@ -170,22 +153,14 @@ class CategoryService:
             category_id: ID категории для удаления
 
         Raises:
-            HTTPException 404: Категория не найдена
+            CategoryNotFoundError: Категория не найдена
         """
         category = await self.category_repo.get_by_id(category_id)
         if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with id {category_id} not found"
-            )
+            raise CategoryNotFoundError(category_id=str(category_id))
 
         # Soft delete (подкатегории удалятся автоматически благодаря cascade)
-        success = await self.category_repo.soft_delete(category_id)
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with id {category_id} not found"
-            )
+        await self.category_repo.soft_delete(category_id)
 
     async def get_category(self, category_id: uuid.UUID) -> CategoryResponse:
         """
@@ -198,14 +173,11 @@ class CategoryService:
             CategoryResponse: Категория
 
         Raises:
-            HTTPException 404: Категория не найдена
+            CategoryNotFoundError: Категория не найдена
         """
         category = await self.category_repo.get_by_id(category_id)
         if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with id {category_id} not found"
-            )
+            raise CategoryNotFoundError(category_id=str(category_id))
 
         return CategoryResponse.model_validate(category)
 
@@ -220,14 +192,11 @@ class CategoryService:
             CategoryResponse: Категория
 
         Raises:
-            HTTPException 404: Категория не найдена
+            CategoryNotFoundError: Категория не найдена
         """
         category = await self.category_repo.get_by_slug(slug)
         if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with slug '{slug}' not found"
-            )
+            raise CategoryNotFoundError(slug=slug)
 
         return CategoryResponse.model_validate(category)
 
@@ -267,14 +236,11 @@ class CategoryService:
             list[CategoryResponse]: Список подкатегорий
 
         Raises:
-            HTTPException 404: Родительская категория не найдена
+            CategoryNotFoundError: Родительская категория не найдена
         """
         parent = await self.category_repo.get_by_id(parent_id)
         if not parent:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Parent category with id {parent_id} not found"
-            )
+            raise CategoryNotFoundError(category_id=str(parent_id))
 
         categories = await self.category_repo.get_by_parent(parent_id, skip=skip, limit=limit)
         return [CategoryResponse.model_validate(cat) for cat in categories]

@@ -1,8 +1,15 @@
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import (
+    ProductNotFoundError,
+    ProductSlugAlreadyExistsError,
+    ProductSKUAlreadyExistsError,
+    CategoryNotFoundError,
+    InsufficientStockError,
+    InvalidStockQuantityError,
+)
 from app.models.product import Product
 from app.repositories.product import ProductRepository
 from app.repositories.category import CategoryRepository
@@ -37,31 +44,22 @@ class ProductService:
             ProductResponse: Созданный продукт
 
         Raises:
-            HTTPException 404: Категория не найдена
-            HTTPException 409: Slug уже существует
-            HTTPException 409: SKU уже существует
+            CategoryNotFoundError: Категория не найдена
+            ProductSlugAlreadyExistsError: Slug уже существует
+            ProductSKUAlreadyExistsError: SKU уже существует
         """
         # Проверка существования категории
         category = await self.category_repo.get_by_id(data.category_id)
         if not category:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Category with id {data.category_id} not found"
-            )
+            raise CategoryNotFoundError(category_id=str(data.category_id))
 
         # Проверка уникальности slug
         if await self.product_repo.slug_exists(data.slug):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Product with slug '{data.slug}' already exists"
-            )
+            raise ProductSlugAlreadyExistsError(data.slug)
 
         # Проверка уникальности SKU (если указан)
         if data.sku and await self.product_repo.sku_exists(data.sku):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Product with SKU '{data.sku}' already exists"
-            )
+            raise ProductSKUAlreadyExistsError(data.sku)
 
         # Создание продукта
         product = Product(
@@ -88,18 +86,15 @@ class ProductService:
             ProductResponse: Обновленный продукт
 
         Raises:
-            HTTPException 404: Продукт не найден
-            HTTPException 404: Категория не найдена
-            HTTPException 409: Slug уже существует
-            HTTPException 409: SKU уже существует
+            ProductNotFoundError: Продукт не найден
+            CategoryNotFoundError: Категория не найдена
+            ProductSlugAlreadyExistsError: Slug уже существует
+            ProductSKUAlreadyExistsError: SKU уже существует
         """
         # Получение существующего продукта
         product = await self.product_repo.get_by_id(product_id)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
-            )
+            raise ProductNotFoundError(product_id=str(product_id))
 
         # Подготовка данных для обновления
         update_data = data.model_dump(exclude_unset=True)
@@ -108,18 +103,12 @@ class ProductService:
         if "category_id" in update_data:
             category = await self.category_repo.get_by_id(update_data["category_id"])
             if not category:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Category with id {update_data['category_id']} not found"
-                )
+                raise CategoryNotFoundError(category_id=str(update_data["category_id"]))
 
         # Проверка уникальности slug (если меняется)
         if "slug" in update_data and update_data["slug"] != product.slug:
             if await self.product_repo.slug_exists(update_data["slug"], exclude_product_id=product_id):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Product with slug '{update_data['slug']}' already exists"
-                )
+                raise ProductSlugAlreadyExistsError(update_data["slug"])
 
         # Проверка уникальности SKU (если меняется)
         if "sku" in update_data and update_data["sku"] != product.sku:
@@ -127,10 +116,7 @@ class ProductService:
                 update_data["sku"],
                 exclude_product_id=product_id
             ):
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Product with SKU '{update_data['sku']}' already exists"
-                )
+                raise ProductSKUAlreadyExistsError(update_data["sku"])
 
         # Обновление продукта
         updated_product = await self.product_repo.update(product_id, **update_data)
@@ -144,21 +130,13 @@ class ProductService:
             product_id: ID продукта для удаления
 
         Raises:
-            HTTPException 404: Продукт не найден
+            ProductNotFoundError: Продукт не найден
         """
         product = await self.product_repo.get_by_id(product_id)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
-            )
+            raise ProductNotFoundError(product_id=str(product_id))
 
-        success = await self.product_repo.soft_delete(product_id)
-        if not success:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
-            )
+        await self.product_repo.soft_delete(product_id)
 
     async def get_product(self, product_id: uuid.UUID) -> ProductResponse:
         """
@@ -171,14 +149,11 @@ class ProductService:
             ProductResponse: Продукт
 
         Raises:
-            HTTPException 404: Продукт не найден
+            ProductNotFoundError: Продукт не найден
         """
         product = await self.product_repo.get_by_id(product_id)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
-            )
+            raise ProductNotFoundError(product_id=str(product_id))
 
         return ProductResponse.model_validate(product)
 
@@ -193,14 +168,11 @@ class ProductService:
             ProductResponse: Продукт
 
         Raises:
-            HTTPException 404: Продукт не найден
+            ProductNotFoundError: Продукт не найден
         """
         product = await self.product_repo.get_by_slug(slug)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with slug '{slug}' not found"
-            )
+            raise ProductNotFoundError(slug=slug)
 
         return ProductResponse.model_validate(product)
 
@@ -215,14 +187,11 @@ class ProductService:
             ProductResponse: Продукт
 
         Raises:
-            HTTPException 404: Продукт не найден
+            ProductNotFoundError: Продукт не найден
         """
         product = await self.product_repo.get_by_sku(sku)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with SKU '{sku}' not found"
-            )
+            raise ProductNotFoundError(sku=sku)
 
         return ProductResponse.model_validate(product)
 
@@ -242,23 +211,21 @@ class ProductService:
             ProductResponse: Обновленный продукт
 
         Raises:
-            HTTPException 404: Продукт не найден
-            HTTPException 400: Недостаточно товара на складе
+            ProductNotFoundError: Продукт не найден
+            InsufficientStockError: Недостаточно товара на складе
         """
         product = await self.product_repo.get_by_id(product_id)
         if not product:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Product with id {product_id} not found"
-            )
+            raise ProductNotFoundError(product_id=str(product_id))
 
         new_quantity = product.stock_quantity + quantity_delta
 
         # Проверка на отрицательный остаток
         if new_quantity < 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Insufficient stock. Available: {product.stock_quantity}, requested: {abs(quantity_delta)}"
+            raise InsufficientStockError(
+                str(product_id),
+                abs(quantity_delta),
+                product.stock_quantity
             )
 
         # Обновление остатка
@@ -285,14 +252,11 @@ class ProductService:
             ProductResponse: Обновленный продукт
 
         Raises:
-            HTTPException 400: Количество должно быть положительным
-            HTTPException 404: Продукт не найден
+            InvalidStockQuantityError: Количество должно быть положительным
+            ProductNotFoundError: Продукт не найден
         """
         if quantity <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Quantity must be positive"
-            )
+            raise InvalidStockQuantityError(quantity, "Quantity must be positive")
 
         return await self.update_stock(product_id, quantity)
 
@@ -312,15 +276,12 @@ class ProductService:
             ProductResponse: Обновленный продукт
 
         Raises:
-            HTTPException 400: Количество должно быть положительным
-            HTTPException 400: Недостаточно товара на складе
-            HTTPException 404: Продукт не найден
+            InsufficientStockError: Недостаточно товара на складе
+            InvalidStockQuantityError: Количество должно быть положительным
+            ProductNotFoundError: Продукт не найден
         """
         if quantity <= 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Quantity must be positive"
-            )
+            raise InvalidStockQuantityError(quantity, "Quantity must be positive")
 
         return await self.update_stock(product_id, -quantity)
 

@@ -1,8 +1,8 @@
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.exceptions import UserNotFoundError
 from app.models.user import User, UserRole
 from app.repositories.user import UserRepository
 from app.schemas.user import UserResponse
@@ -38,14 +38,11 @@ class UserService:
             UserResponse с данными пользователя
 
         Raises:
-            HTTPException 404: Пользователь не найден
+            UserNotFoundError: Пользователь не найден
         """
         user = await self.user_repo.get_by_id(user_id)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+            raise UserNotFoundError(str(user_id))
 
         return UserResponse.model_validate(user)
 
@@ -65,15 +62,12 @@ class UserService:
             UserResponse с обновленными данными
 
         Raises:
-            HTTPException 404: Пользователь не найден
+            UserNotFoundError: Пользователь не найден
         """
         # Проверка существования
         user = await self.user_repo.get_by_id(user_id)
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
+            raise UserNotFoundError(str(user_id))
 
         # Обновление
         if update_data:
