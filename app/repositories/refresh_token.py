@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, update, delete, and_
+from sqlalchemy import select, update, delete, and_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.refresh_token import RefreshToken
@@ -43,10 +43,10 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         query = select(RefreshToken).where(RefreshToken.token_hash == token_hash)
 
         if not include_revoked:
-            query = query.where(RefreshToken.is_revoked == False)
+            query = query.where(RefreshToken.is_revoked.is_(False))
 
         if not include_deleted:
-            query = query.where(RefreshToken.is_deleted == False)
+            query = query.where(RefreshToken.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -71,10 +71,10 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         query = select(RefreshToken).where(RefreshToken.user_id == user_id)
 
         if not include_revoked:
-            query = query.where(RefreshToken.is_revoked == False)
+            query = query.where(RefreshToken.is_revoked.is_(False))
 
         if not include_deleted:
-            query = query.where(RefreshToken.is_deleted == False)
+            query = query.where(RefreshToken.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return list(result.scalars().all())
@@ -93,16 +93,19 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
             True если токен валиден, False если нет
         """
         now = datetime.now(timezone.utc)
-        query = select(RefreshToken).where(
+        # Создаем подзапрос для exists
+        subquery = select(RefreshToken.id).where(
             and_(
                 RefreshToken.token_hash == token_hash,
-                RefreshToken.is_revoked == False,
-                RefreshToken.is_deleted == False,
+                RefreshToken.is_revoked.is_(False),
+                RefreshToken.is_deleted.is_(False),
                 RefreshToken.expires_at > now
             )
         )
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()
 
     async def revoke_token(
         self,
@@ -110,6 +113,8 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
     ) -> bool:
         """
         Отозвать токен по хешу.
+
+        ПРИМЕЧАНИЕ: Использует bulk update для производительности (не требует загрузки объекта).
 
         Args:
             token_hash: SHA-256 хеш токена
@@ -120,8 +125,8 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         query = (
             update(RefreshToken)
             .where(RefreshToken.token_hash == token_hash)
-            .where(RefreshToken.is_deleted == False)
-            .where(RefreshToken.is_revoked == False)
+            .where(RefreshToken.is_deleted.is_(False))
+            .where(RefreshToken.is_revoked.is_(False))
             .values(is_revoked=True)
         )
         result = await self.db.execute(query)
@@ -135,6 +140,8 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         """
         Отозвать все токены пользователя.
 
+        ПРИМЕЧАНИЕ: Использует bulk update для производительности (массовая операция).
+
         Args:
             user_id: UUID пользователя
 
@@ -144,8 +151,8 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         query = (
             update(RefreshToken)
             .where(RefreshToken.user_id == user_id)
-            .where(RefreshToken.is_deleted == False)
-            .where(RefreshToken.is_revoked == False)
+            .where(RefreshToken.is_deleted.is_(False))
+            .where(RefreshToken.is_revoked.is_(False))
             .values(is_revoked=True)
         )
         result = await self.db.execute(query)
@@ -207,8 +214,8 @@ class RefreshTokenRepository(BaseRepository[RefreshToken]):
         query = select(RefreshToken).where(
             and_(
                 RefreshToken.user_id == user_id,
-                RefreshToken.is_revoked == False,
-                RefreshToken.is_deleted == False,
+                RefreshToken.is_revoked.is_(False),
+                RefreshToken.is_deleted.is_(False),
                 RefreshToken.expires_at > now
             )
         )

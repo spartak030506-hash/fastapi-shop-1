@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
@@ -40,7 +40,7 @@ class ProductRepository(BaseRepository[Product]):
         query = select(Product).where(Product.slug == slug)
 
         if not include_deleted:
-            query = query.where(Product.is_deleted == False)
+            query = query.where(Product.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -63,7 +63,7 @@ class ProductRepository(BaseRepository[Product]):
         query = select(Product).where(Product.sku == sku)
 
         if not include_deleted:
-            query = query.where(Product.is_deleted == False)
+            query = query.where(Product.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -83,16 +83,19 @@ class ProductRepository(BaseRepository[Product]):
         Returns:
             True если slug существует, False если свободен
         """
-        query = select(Product).where(
+        # Создаем подзапрос для exists
+        subquery = select(Product.id).where(
             Product.slug == slug,
-            Product.is_deleted == False
+            Product.is_deleted.is_(False)
         )
 
         if exclude_product_id:
-            query = query.where(Product.id != exclude_product_id)
+            subquery = subquery.where(Product.id != exclude_product_id)
 
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()
 
     async def sku_exists(
         self,
@@ -109,16 +112,19 @@ class ProductRepository(BaseRepository[Product]):
         Returns:
             True если SKU существует, False если свободен
         """
-        query = select(Product).where(
+        # Создаем подзапрос для exists
+        subquery = select(Product.id).where(
             Product.sku == sku,
-            Product.is_deleted == False
+            Product.is_deleted.is_(False)
         )
 
         if exclude_product_id:
-            query = query.where(Product.id != exclude_product_id)
+            subquery = subquery.where(Product.id != exclude_product_id)
 
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()
 
     async def get_by_category(
         self,
@@ -142,7 +148,7 @@ class ProductRepository(BaseRepository[Product]):
         query = select(Product).where(Product.category_id == category_id)
 
         if not include_deleted:
-            query = query.where(Product.is_deleted == False)
+            query = query.where(Product.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -164,8 +170,8 @@ class ProductRepository(BaseRepository[Product]):
             Список активных продуктов
         """
         query = select(Product).where(
-            Product.is_active == True,
-            Product.is_deleted == False
+            Product.is_active.is_(True),
+            Product.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -196,7 +202,7 @@ class ProductRepository(BaseRepository[Product]):
         )
 
         if not include_deleted:
-            query = query.where(Product.is_deleted == False)
+            query = query.where(Product.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -221,7 +227,7 @@ class ProductRepository(BaseRepository[Product]):
         """
         query = select(Product).where(
             Product.stock_quantity <= threshold,
-            Product.is_deleted == False
+            Product.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -245,7 +251,7 @@ class ProductRepository(BaseRepository[Product]):
         """
         query = select(Product).where(
             Product.stock_quantity == 0,
-            Product.is_deleted == False
+            Product.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -279,7 +285,7 @@ class ProductRepository(BaseRepository[Product]):
         Returns:
             Список найденных продуктов
         """
-        query = select(Product).where(Product.is_deleted == False)
+        query = select(Product).where(Product.is_deleted.is_(False))
 
         # Поиск по названию или описанию
         if search_term:
@@ -306,7 +312,7 @@ class ProductRepository(BaseRepository[Product]):
 
         # Только активные товары
         if active_only:
-            query = query.where(Product.is_active == True)
+            query = query.where(Product.is_active.is_(True))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)

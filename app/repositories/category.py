@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.category import Category
@@ -40,7 +40,7 @@ class CategoryRepository(BaseRepository[Category]):
         query = select(Category).where(Category.slug == slug)
 
         if not include_deleted:
-            query = query.where(Category.is_deleted == False)
+            query = query.where(Category.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -60,16 +60,19 @@ class CategoryRepository(BaseRepository[Category]):
         Returns:
             True если slug существует, False если свободен
         """
-        query = select(Category).where(
+        # Создаем подзапрос для exists
+        subquery = select(Category.id).where(
             Category.slug == slug,
-            Category.is_deleted == False
+            Category.is_deleted.is_(False)
         )
 
         if exclude_category_id:
-            query = query.where(Category.id != exclude_category_id)
+            subquery = subquery.where(Category.id != exclude_category_id)
 
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()
 
     async def get_by_parent(
         self,
@@ -93,7 +96,7 @@ class CategoryRepository(BaseRepository[Category]):
         query = select(Category).where(Category.parent_id == parent_id)
 
         if not include_deleted:
-            query = query.where(Category.is_deleted == False)
+            query = query.where(Category.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -119,7 +122,7 @@ class CategoryRepository(BaseRepository[Category]):
         query = select(Category).where(Category.parent_id.is_(None))
 
         if not include_deleted:
-            query = query.where(Category.is_deleted == False)
+            query = query.where(Category.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -141,8 +144,8 @@ class CategoryRepository(BaseRepository[Category]):
             Список активных категорий
         """
         query = select(Category).where(
-            Category.is_active == True,
-            Category.is_deleted == False
+            Category.is_active.is_(True),
+            Category.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -167,19 +170,22 @@ class CategoryRepository(BaseRepository[Category]):
         Returns:
             True если имя существует в данном parent, False если свободно
         """
-        query = select(Category).where(
+        # Создаем подзапрос для exists
+        subquery = select(Category.id).where(
             Category.name == name,
-            Category.is_deleted == False
+            Category.is_deleted.is_(False)
         )
 
         # Обработка parent_id (может быть None)
         if parent_id is None:
-            query = query.where(Category.parent_id.is_(None))
+            subquery = subquery.where(Category.parent_id.is_(None))
         else:
-            query = query.where(Category.parent_id == parent_id)
+            subquery = subquery.where(Category.parent_id == parent_id)
 
         if exclude_category_id:
-            query = query.where(Category.id != exclude_category_id)
+            subquery = subquery.where(Category.id != exclude_category_id)
 
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()

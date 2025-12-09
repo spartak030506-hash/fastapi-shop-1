@@ -174,6 +174,42 @@ if not payload.sub or not isinstance(payload.sub, UUID):
 - users/services/test_auth_service.py
 - users/repositories/test_user_repository.py
 
-✅ Тестируется поведение, а не реализация  
-✅ Легче читать и поддерживать  
+✅ Тестируется поведение, а не реализация
+✅ Легче читать и поддерживать
 ✅ Рефакторинг без переписывания тестов
+
+## 11. SQLAlchemy Best Practices
+
+### ORM-стиль вместо bulk update
+```python
+# ❌ Плохо - рассинхронизация сессии
+update(User).where(...).values(name="New")
+
+# ✅ Хорошо - объект синхронизирован
+user = await repo.get_by_id(id)
+user.name = "New"
+await db.flush()
+```
+
+### exists() для проверок существования
+```python
+# ❌ Плохо - может упасть на дубликатах
+result.scalar_one_or_none() is not None
+
+# ✅ Хорошо - корректная семантика
+query = select(exists(select(User.id).where(...)))
+result.scalar()
+```
+
+### .is_() для boolean сравнений
+```python
+# ❌ Плохо
+User.is_active == True
+User.is_deleted == False
+
+# ✅ Хорошо - SQLAlchemy best practice
+User.is_active.is_(True)
+User.is_deleted.is_(False)
+```
+
+**Исключение:** Bulk update допустим для массовых операций (revoke_all_tokens), где не нужен объект после обновления.

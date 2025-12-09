@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User, UserRole
@@ -39,7 +39,7 @@ class UserRepository(BaseRepository[User]):
         query = select(User).where(User.email == email)
 
         if not include_deleted:
-            query = query.where(User.is_deleted == False)
+            query = query.where(User.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -59,16 +59,19 @@ class UserRepository(BaseRepository[User]):
         Returns:
             True если email существует, False если свободен
         """
-        query = select(User).where(
+        # Создаем подзапрос для exists
+        subquery = select(User.id).where(
             User.email == email,
-            User.is_deleted == False
+            User.is_deleted.is_(False)
         )
 
         if exclude_user_id:
-            query = query.where(User.id != exclude_user_id)
+            subquery = subquery.where(User.id != exclude_user_id)
 
+        # Используем exists() для проверки
+        query = select(exists(subquery))
         result = await self.db.execute(query)
-        return result.scalar_one_or_none() is not None
+        return result.scalar()
 
     async def get_by_role(
         self,
@@ -92,7 +95,7 @@ class UserRepository(BaseRepository[User]):
         query = select(User).where(User.role == role)
 
         if not include_deleted:
-            query = query.where(User.is_deleted == False)
+            query = query.where(User.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -114,8 +117,8 @@ class UserRepository(BaseRepository[User]):
             Список активных пользователей
         """
         query = select(User).where(
-            User.is_active == True,
-            User.is_deleted == False
+            User.is_active.is_(True),
+            User.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -138,8 +141,8 @@ class UserRepository(BaseRepository[User]):
             Список верифицированных пользователей
         """
         query = select(User).where(
-            User.is_verified == True,
-            User.is_deleted == False
+            User.is_verified.is_(True),
+            User.is_deleted.is_(False)
         )
 
         query = query.offset(skip).limit(limit)
@@ -167,11 +170,11 @@ class UserRepository(BaseRepository[User]):
         Returns:
             Список пользователей, соответствующих фильтрам
         """
-        query = select(User).where(User.is_deleted == False)
+        query = select(User).where(User.is_deleted.is_(False))
 
         # Фильтр по is_active
         if is_active is not None:
-            query = query.where(User.is_active == is_active)
+            query = query.where(User.is_active.is_(is_active))
 
         # Фильтр по role
         if role is not None:

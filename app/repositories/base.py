@@ -1,7 +1,7 @@
 import uuid
 from typing import Generic, TypeVar
 
-from sqlalchemy import select, update, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import BaseModel
@@ -39,7 +39,7 @@ class BaseRepository(Generic[ModelType]):
         query = select(self.model).where(self.model.id == id)
 
         if not include_deleted:
-            query = query.where(self.model.is_deleted == False)
+            query = query.where(self.model.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one_or_none()
@@ -64,7 +64,7 @@ class BaseRepository(Generic[ModelType]):
         query = select(self.model)
 
         if not include_deleted:
-            query = query.where(self.model.is_deleted == False)
+            query = query.where(self.model.is_deleted.is_(False))
 
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
@@ -83,7 +83,7 @@ class BaseRepository(Generic[ModelType]):
         query = select(func.count(self.model.id))
 
         if not include_deleted:
-            query = query.where(self.model.is_deleted == False)
+            query = query.where(self.model.is_deleted.is_(False))
 
         result = await self.db.execute(query)
         return result.scalar_one()
@@ -107,6 +107,8 @@ class BaseRepository(Generic[ModelType]):
         """
         Обновить запись по ID.
 
+        Использует ORM-стиль вместо bulk update для поддержания синхронизации сессии.
+
         Args:
             id: UUID записи
             **kwargs: Поля для обновления
@@ -114,20 +116,25 @@ class BaseRepository(Generic[ModelType]):
         Returns:
             Обновленная запись или None
         """
-        query = (
-            update(self.model)
-            .where(self.model.id == id)
-            .where(self.model.is_deleted == False)
-            .values(**kwargs)
-            .returning(self.model)
-        )
-        result = await self.db.execute(query)
+        # Загружаем объект через ORM
+        obj = await self.get_by_id(id, include_deleted=False)
+        if obj is None:
+            return None
+
+        # Обновляем атрибуты объекта
+        for key, value in kwargs.items():
+            setattr(obj, key, value)
+
+        # Flush изменений в БД и обновляем объект
         await self.db.flush()
-        return result.scalar_one_or_none()
+        await self.db.refresh(obj)
+        return obj
 
     async def soft_delete(self, id: uuid.UUID) -> bool:
         """
         Мягкое удаление записи (is_deleted = True).
+
+        Использует ORM-стиль вместо bulk update для поддержания синхронизации сессии.
 
         Args:
             id: UUID записи
@@ -135,15 +142,17 @@ class BaseRepository(Generic[ModelType]):
         Returns:
             True если запись удалена, False если не найдена
         """
-        query = (
-            update(self.model)
-            .where(self.model.id == id)
-            .where(self.model.is_deleted == False)
-            .values(is_deleted=True)
-        )
-        result = await self.db.execute(query)
+        # Загружаем объект через ORM
+        obj = await self.get_by_id(id, include_deleted=False)
+        if obj is None:
+            return False
+
+        # Помечаем как удаленный
+        obj.is_deleted = True
+
+        # Flush изменений в БД
         await self.db.flush()
-        return result.rowcount > 0
+        return True
 
     async def hard_delete(self, id: uuid.UUID) -> bool:
         """
