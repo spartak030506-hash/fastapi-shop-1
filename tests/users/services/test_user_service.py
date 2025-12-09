@@ -179,23 +179,35 @@ class TestUserServiceUpdateUser:
                 role=UserRole.ADMIN,  # ❌ Запрещено
             )
 
-        # Проверяем, что Pydantic v2 блокирует лишнее поле
-        error_message = str(exc_info.value).lower()
-        assert "extra inputs are not permitted" in error_message or "extra fields not permitted" in error_message
+        # Проверяем структуру ValidationError (не зависим от текста Pydantic)
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["type"] == "extra_forbidden"
+        assert errors[0]["loc"] == ("role",)
 
         # Пытаемся передать email (запрещено)
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             UserUpdate(
                 first_name="New Name",
                 email="newemail@example.com",  # ❌ Запрещено
             )
 
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["type"] == "extra_forbidden"
+        assert errors[0]["loc"] == ("email",)
+
         # Пытаемся передать password (запрещено)
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             UserUpdate(
                 first_name="New Name",
                 password="NewPassword123",  # ❌ Запрещено
             )
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["type"] == "extra_forbidden"
+        assert errors[0]["loc"] == ("password",)
 
         # Проверяем, что ничего не изменилось в БД
         user_repo = UserRepository(db_session)

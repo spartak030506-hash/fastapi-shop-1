@@ -270,15 +270,25 @@ alembic/
 **Разделение ответственности:**
 
 - **AuthService** - аутентификация и безопасность:
-  - register, login, refresh_tokens
-  - logout, logout_all_devices
-  - change_password (меняет пароль + отзывает все токены)
-  - **delete_user** (отзывает все токены + soft delete) - остается здесь, т.к. связанная операция
+  - **register**: создание пользователя + токены
+    - ✅ Race condition защита (IntegrityError → EmailAlreadyExistsError)
+  - **login**: вход в систему + токены
+    - ✅ Проверка is_active перед выдачей токенов
+  - **refresh_tokens**: обновление пары токенов
+    - ✅ Безопасный парсинг JWT payload (проверка sub: None, missing, неверный тип, невалидный UUID)
+    - ✅ Проверка статуса пользователя (is_active, is_deleted) перед обновлением
+    - ✅ Token rotation (отзыв старого токена)
+  - **logout**: отзыв одного refresh токена
+  - **logout_all_devices**: отзыв всех refresh токенов пользователя
+  - **change_password**: смена пароля + отзыв всех токенов
+  - **delete_user**: soft delete + отзыв всех токенов
 
 - **UserService** - CRUD операции с пользователями:
-  - get_user (получение по ID с валидацией)
-  - update_user (обновление профиля)
-  - list_users (список с фильтрами: is_active, role, search)
+  - **get_user**: получение по ID с валидацией
+  - **update_user**: обновление профиля (строгий контракт)
+    - ✅ Принимает UserUpdate schema (только first_name, last_name, phone)
+    - ✅ Pydantic блокирует запрещенные поля (role, email, password) через extra="forbid"
+  - **list_users**: список с фильтрами (is_active, role, search) и пагинацией
   - Возвращает `UserResponse`, а не ORM объекты
 
 - **CategoryService**:
@@ -318,10 +328,23 @@ alembic/
   - db_fixtures.py: setup_database (autouse), db_session, event_loop
   - client_fixtures.py: HTTP client с переопределением БД
 - **Users domain** (tests/users/):
-  - fixtures/auth_fixtures.py: test_user, test_admin, test_inactive_user, auth_headers
+  - fixtures/auth_fixtures.py: test_user, test_admin, test_inactive_user, test_unverified_user, test_users, auth_headers
   - repositories/: тесты UserRepository, RefreshTokenRepository (базовый CRUD + специфичные методы)
   - security/: unit-тесты security функций (hash_password, JWT, SHA-256)
-  - services/: интеграционные тесты AuthService (@pytest.mark.integration)
+  - **services/** ✅ **ГОТОВО** (56 интеграционных тестов):
+    - **test_auth_service.py** (36 тестов, 7 классов):
+      - TestAuthServiceRegister (4 теста): успешная регистрация, дубликат email, без optional полей
+      - TestAuthServiceLogin (5 тестов): успешный вход, неверные credentials, неактивный user, множественные логины
+      - TestAuthServiceRefreshTokens (12 тестов): успешный refresh, невалидные токены (missing sub, null sub, invalid UUID, integer sub), неактивный/удалённый user, token rotation, повторное использование
+      - TestAuthServiceLogout (4 теста): logout, logout_all_devices, изоляция устройств
+      - TestAuthServiceChangePassword (4 теста): успешная смена, неверный старый пароль, отзыв всех токенов
+      - TestAuthServiceDeleteUser (4 теста): soft delete, отзыв токенов, невозможность логина после удаления
+      - **Покрытие безопасности**: JWT payload валидация, статус пользователя, race condition защита
+    - **test_user_service.py** (19 тестов, 3 класса):
+      - TestUserServiceGetUser (3 теста): получение по ID, user not found, получение admin
+      - TestUserServiceUpdateUser (6 тестов): обновление полей, частичное обновление, пустое обновление, защита от изменения role/email/password (ValidationError с проверкой структуры)
+      - TestUserServiceListUsers (10 тестов): пагинация, фильтры (is_active, role, search), комбинированные фильтры, параметризация
+    - **Best practices**: устойчивые assertions (не зависят от текстов PyJWT/Pydantic), проверка структуры ValidationError через errors(), организация по классам
 - **Изоляция**: create/drop tables на каждый тест (autouse fixture setup_database)
 - **Маркеры**: @pytest.mark.unit (пропускают БД), @pytest.mark.integration (требуют БД)
 
@@ -1437,6 +1460,12 @@ Query параметры:
 - [x] **Categories module** - модель, schemas, repositories, services, API endpoints ✅
 - [x] **Products module** - модель, schemas, repositories, services, API endpoints ✅
 - [x] **Domain Exceptions** - доменные исключения + exception handlers + IntegrityError обработка ✅
+- [x] **Users Services Tests** - интеграционные тесты для AuthService и UserService (56 тестов) ✅
+  - test_auth_service.py: 36 тестов (register, login, refresh_tokens, logout, change_password, delete_user)
+  - test_user_service.py: 19 тестов (get_user, update_user, list_users)
+  - Покрытие безопасности: JWT payload валидация, race condition, строгий контракт
+- [ ] **Categories/Products Services Tests** - интеграционные тесты для CategoryService и ProductService
+- [ ] **API Endpoints Tests** - интеграционные тесты для всех API endpoints (tests/users/api/, tests/categories/api/, tests/products/api/)
 - [ ] Orders module (корзина, заказы, статусы)
 - [ ] Redis cache (для частых запросов)
 - [ ] Rate limiting (защита от abuse)
@@ -1477,6 +1506,10 @@ Query параметры:
 ✅ **Изоляция:** create/drop tables на каждый тест
 ✅ **Маркеры:** @pytest.mark.unit, @pytest.mark.integration
 ✅ **Не запускать без разрешения пользователя**
+✅ **Устойчивые assertions:** не зависят от текстов сторонних библиотек (PyJWT, Pydantic)
+✅ **Проверка структуры:** ValidationError.errors(), а не текста сообщения
+✅ **Организация по классам:** один класс = один метод сервиса
+✅ **Понятные имена:** test_{method}_{scenario}
 
 ### Минимализм
 ✅ **Не over-engineer:** только то, что попросили

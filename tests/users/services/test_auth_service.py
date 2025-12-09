@@ -299,11 +299,9 @@ class TestAuthServiceRefreshTokens:
 
         token_with_null_sub = create_refresh_token(data={"sub": None})
 
-        with pytest.raises(InvalidTokenError) as exc_info:
+        # Проверяем только факт InvalidTokenError (не зависим от текста PyJWT)
+        with pytest.raises(InvalidTokenError):
             await service.refresh_tokens(token_with_null_sub)
-
-        # JWT библиотека сама валидирует sub и выбрасывает ошибку
-        assert "subject must be a string" in str(exc_info.value.message).lower()
 
     async def test_refresh_tokens_invalid_uuid_format(
         self, db_session: AsyncSession
@@ -332,11 +330,9 @@ class TestAuthServiceRefreshTokens:
 
         token_with_int_sub = create_refresh_token(data={"sub": 12345})
 
-        with pytest.raises(InvalidTokenError) as exc_info:
+        # Проверяем только факт InvalidTokenError (не зависим от текста PyJWT)
+        with pytest.raises(InvalidTokenError):
             await service.refresh_tokens(token_with_int_sub)
-
-        # JWT библиотека сама валидирует sub и выбрасывает ошибку
-        assert "subject must be a string" in str(exc_info.value.message).lower()
 
     async def test_refresh_tokens_inactive_user(
         self, db_session: AsyncSession, test_inactive_user: UserModel, test_password: str
