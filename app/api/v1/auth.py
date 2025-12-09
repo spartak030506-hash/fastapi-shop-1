@@ -99,11 +99,13 @@ async def refresh_tokens(
 )
 async def logout(
     data: RefreshTokenRequest,
+    current_user: User = Depends(get_current_active_user),
     service: AuthService = Depends(get_auth_service)
 ) -> MessageResponse:
     """
     Отзыв refresh токена (выход на текущем устройстве).
 
+    Требуется аутентификация (Bearer token).
     Access токен продолжит работать до истечения срока действия.
     """
     await service.logout(data.refresh_token)

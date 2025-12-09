@@ -69,13 +69,19 @@ Authorization: Bearer <access_token>
 ---
 
 ### POST /auth/logout
-Выход с текущего устройства.
+Выход с текущего устройства (отзыв refresh токена).
 
-**Auth:** required
+**Auth:** required (Bearer token)
+
+**Request body:**
+| Field | Type | Required |
+|-----|-----|---------|
+| refresh_token | string | ✅ |
 
 **Responses:**
-- `204 No Content`
-- `401 Unauthorized`
+- `200 OK` — успешный выход
+- `401 Unauthorized` — невалидный или отозванный refresh token
+- `403 Forbidden` — отсутствует Bearer token
 
 ---
 

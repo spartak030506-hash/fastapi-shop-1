@@ -1,10 +1,3 @@
-"""
-Корневой conftest для автоматического импорта всех fixtures.
-
-Pytest автоматически обнаруживает fixtures из conftest.py.
-Этот файл импортирует все fixtures из модульных файлов,
-делая их доступными для всех тестов.
-"""
 
 # Импортируем все shared fixtures (DB, client)
 from tests.shared.fixtures.db_fixtures import *  # noqa: F401, F403
