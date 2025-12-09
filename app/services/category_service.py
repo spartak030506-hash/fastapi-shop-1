@@ -34,6 +34,10 @@ class CategoryService:
         """
         Создание новой категории.
 
+        Уникальность slug и (name + parent_id) гарантируется UNIQUE индексами БД.
+        При дублировании SQLAlchemy выбросит IntegrityError, который обрабатывается
+        глобально в main.py (возвращает 409 Conflict с деталями).
+
         Args:
             data: Данные для создания категории
 
@@ -41,18 +45,9 @@ class CategoryService:
             CategoryResponse: Созданная категория
 
         Raises:
-            CategorySlugAlreadyExistsError: Slug уже существует
-            CategoryNameAlreadyExistsError: Имя уже существует в рамках parent
             CategoryNotFoundError: Родительская категория не найдена
+            IntegrityError: Нарушение уникальности (автоматически → 409 Conflict)
         """
-        # Проверка уникальности slug
-        if await self.category_repo.slug_exists(data.slug):
-            raise CategorySlugAlreadyExistsError(data.slug)
-
-        # Проверка уникальности name в рамках parent
-        if await self.category_repo.name_exists_in_parent(data.name, data.parent_id):
-            raise CategoryNameAlreadyExistsError(data.name, str(data.parent_id) if data.parent_id else None)
-
         # Проверка существования parent категории
         if data.parent_id:
             parent = await self.category_repo.get_by_id(data.parent_id)
@@ -60,6 +55,7 @@ class CategoryService:
                 raise CategoryNotFoundError(category_id=str(data.parent_id))
 
         # Создание категории
+        # Уникальность slug и name+parent_id проверяется на уровне БД (UNIQUE индексы)
         category = Category(
             id=uuid.uuid4(),
             **data.model_dump()
@@ -76,6 +72,10 @@ class CategoryService:
         """
         Обновление существующей категории.
 
+        Уникальность slug и (name + parent_id) гарантируется UNIQUE индексами БД.
+        При дублировании SQLAlchemy выбросит IntegrityError, который обрабатывается
+        глобально в main.py (возвращает 409 Conflict с деталями).
+
         Args:
             category_id: ID категории
             data: Данные для обновления
@@ -85,10 +85,9 @@ class CategoryService:
 
         Raises:
             CategoryNotFoundError: Категория не найдена
-            CategorySlugAlreadyExistsError: Slug уже существует
-            CategoryNameAlreadyExistsError: Имя уже существует в рамках parent
             CategorySelfParentError: Попытка установить саму себя как parent
             CircularCategoryDependencyError: Попытка создать циклическую зависимость
+            IntegrityError: Нарушение уникальности (автоматически → 409 Conflict)
         """
         # Получение существующей категории
         category = await self.category_repo.get_by_id(category_id)
@@ -97,26 +96,6 @@ class CategoryService:
 
         # Подготовка данных для обновления
         update_data = data.model_dump(exclude_unset=True)
-
-        # Проверка уникальности slug (если меняется)
-        if "slug" in update_data and update_data["slug"] != category.slug:
-            if await self.category_repo.slug_exists(update_data["slug"], exclude_category_id=category_id):
-                raise CategorySlugAlreadyExistsError(update_data["slug"])
-
-        # Проверка уникальности name в рамках parent (если меняется name или parent_id)
-        if "name" in update_data or "parent_id" in update_data:
-            new_name = update_data.get("name", category.name)
-            new_parent_id = update_data.get("parent_id", category.parent_id)
-
-            if await self.category_repo.name_exists_in_parent(
-                new_name,
-                new_parent_id,
-                exclude_category_id=category_id
-            ):
-                raise CategoryNameAlreadyExistsError(
-                    new_name,
-                    str(new_parent_id) if new_parent_id else None
-                )
 
         # Проверка parent_id (если меняется)
         if "parent_id" in update_data:
@@ -140,6 +119,7 @@ class CategoryService:
                     )
 
         # Обновление категории
+        # Уникальность slug и name+parent_id проверяется на уровне БД (UNIQUE индексы)
         updated_category = await self.category_repo.update(category_id, **update_data)
         return CategoryResponse.model_validate(updated_category)
 
@@ -147,7 +127,8 @@ class CategoryService:
         """
         Мягкое удаление категории.
 
-        ВНИМАНИЕ: Удаляет категорию вместе со всеми подкатегориями (cascade).
+        ВАЖНО: Помечает is_deleted=True ТОЛЬКО для указанной категории.
+        Подкатегории НЕ удаляются автоматически (soft delete не каскадируется).
 
         Args:
             category_id: ID категории для удаления
@@ -159,7 +140,7 @@ class CategoryService:
         if not category:
             raise CategoryNotFoundError(category_id=str(category_id))
 
-        # Soft delete (подкатегории удалятся автоматически благодаря cascade)
+        # Soft delete (помечает только эту категорию, подкатегории остаются)
         await self.category_repo.soft_delete(category_id)
 
     async def get_category(self, category_id: uuid.UUID) -> CategoryResponse:

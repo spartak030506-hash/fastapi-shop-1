@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import select, or_, exists
+from sqlalchemy import select, or_, exists, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.product import Product
@@ -317,3 +317,47 @@ class ProductRepository(BaseRepository[Product]):
         query = query.offset(skip).limit(limit)
         result = await self.db.execute(query)
         return list(result.scalars().all())
+
+    async def atomic_update_stock(
+        self,
+        product_id: uuid.UUID,
+        quantity_delta: int
+    ) -> Product | None:
+        """
+        Атомарное обновление остатка товара (thread-safe, race condition safe).
+
+        Использует UPDATE с выражением: stock_quantity = stock_quantity + delta
+        с проверкой что результат >= 0. Это гарантирует что при конкурентной
+        нагрузке не произойдет oversell (продажа больше чем есть).
+
+        Args:
+            product_id: ID продукта
+            quantity_delta: Изменение количества (может быть отрицательным)
+
+        Returns:
+            Product | None: Обновленный продукт или None если:
+                - продукт не найден
+                - недостаточно товара (stock_quantity + delta < 0)
+        """
+        # UPDATE products
+        # SET stock_quantity = stock_quantity + quantity_delta
+        # WHERE id = product_id
+        #   AND is_deleted = False
+        #   AND stock_quantity + quantity_delta >= 0
+        stmt = (
+            update(Product)
+            .where(
+                Product.id == product_id,
+                Product.is_deleted.is_(False),
+                # Проверка что новый остаток не будет отрицательным
+                Product.stock_quantity + quantity_delta >= 0
+            )
+            .values(stock_quantity=Product.stock_quantity + quantity_delta)
+            .returning(Product)
+        )
+
+        result = await self.db.execute(stmt)
+        await self.db.flush()
+
+        # Возвращаем обновленный продукт или None если update не выполнился
+        return result.scalar_one_or_none()

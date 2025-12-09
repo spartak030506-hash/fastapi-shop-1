@@ -37,6 +37,10 @@ class ProductService:
         """
         Создание нового продукта.
 
+        Уникальность slug и sku гарантируется UNIQUE индексами БД.
+        При дублировании SQLAlchemy выбросит IntegrityError, который обрабатывается
+        глобально в main.py (возвращает 409 Conflict с деталями).
+
         Args:
             data: Данные для создания продукта
 
@@ -45,23 +49,15 @@ class ProductService:
 
         Raises:
             CategoryNotFoundError: Категория не найдена
-            ProductSlugAlreadyExistsError: Slug уже существует
-            ProductSKUAlreadyExistsError: SKU уже существует
+            IntegrityError: Нарушение уникальности (автоматически → 409 Conflict)
         """
         # Проверка существования категории
         category = await self.category_repo.get_by_id(data.category_id)
         if not category:
             raise CategoryNotFoundError(category_id=str(data.category_id))
 
-        # Проверка уникальности slug
-        if await self.product_repo.slug_exists(data.slug):
-            raise ProductSlugAlreadyExistsError(data.slug)
-
-        # Проверка уникальности SKU (если указан)
-        if data.sku and await self.product_repo.sku_exists(data.sku):
-            raise ProductSKUAlreadyExistsError(data.sku)
-
         # Создание продукта
+        # Уникальность slug и sku проверяется на уровне БД (UNIQUE индексы)
         product = Product(
             id=uuid.uuid4(),
             **data.model_dump()
@@ -78,6 +74,10 @@ class ProductService:
         """
         Обновление существующего продукта.
 
+        Уникальность slug и sku гарантируется UNIQUE индексами БД.
+        При дублировании SQLAlchemy выбросит IntegrityError, который обрабатывается
+        глобально в main.py (возвращает 409 Conflict с деталями).
+
         Args:
             product_id: ID продукта
             data: Данные для обновления
@@ -88,8 +88,7 @@ class ProductService:
         Raises:
             ProductNotFoundError: Продукт не найден
             CategoryNotFoundError: Категория не найдена
-            ProductSlugAlreadyExistsError: Slug уже существует
-            ProductSKUAlreadyExistsError: SKU уже существует
+            IntegrityError: Нарушение уникальности (автоматически → 409 Conflict)
         """
         # Получение существующего продукта
         product = await self.product_repo.get_by_id(product_id)
@@ -105,20 +104,8 @@ class ProductService:
             if not category:
                 raise CategoryNotFoundError(category_id=str(update_data["category_id"]))
 
-        # Проверка уникальности slug (если меняется)
-        if "slug" in update_data and update_data["slug"] != product.slug:
-            if await self.product_repo.slug_exists(update_data["slug"], exclude_product_id=product_id):
-                raise ProductSlugAlreadyExistsError(update_data["slug"])
-
-        # Проверка уникальности SKU (если меняется)
-        if "sku" in update_data and update_data["sku"] != product.sku:
-            if update_data["sku"] and await self.product_repo.sku_exists(
-                update_data["sku"],
-                exclude_product_id=product_id
-            ):
-                raise ProductSKUAlreadyExistsError(update_data["sku"])
-
         # Обновление продукта
+        # Уникальность slug и sku проверяется на уровне БД (UNIQUE индексы)
         updated_product = await self.product_repo.update(product_id, **update_data)
         return ProductResponse.model_validate(updated_product)
 
@@ -203,6 +190,9 @@ class ProductService:
         """
         Обновление остатка продукта (увеличение или уменьшение).
 
+        ВАЖНО: Использует атомарный UPDATE для защиты от race conditions.
+        При конкурентной нагрузке гарантирует что не произойдет oversell.
+
         Args:
             product_id: ID продукта
             quantity_delta: Изменение количества (может быть отрицательным)
@@ -211,28 +201,29 @@ class ProductService:
             ProductResponse: Обновленный продукт
 
         Raises:
-            ProductNotFoundError: Продукт не найден
+            ProductNotFoundError: Продукт не найден или недостаточно товара
             InsufficientStockError: Недостаточно товара на складе
         """
-        product = await self.product_repo.get_by_id(product_id)
-        if not product:
-            raise ProductNotFoundError(product_id=str(product_id))
+        # Атомарное обновление: UPDATE stock_quantity = stock_quantity + delta
+        # WHERE stock_quantity + delta >= 0
+        updated_product = await self.product_repo.atomic_update_stock(
+            product_id,
+            quantity_delta
+        )
 
-        new_quantity = product.stock_quantity + quantity_delta
+        # Если update не выполнился - либо продукт не найден, либо недостаточно товара
+        if not updated_product:
+            # Проверяем существование продукта для точного сообщения об ошибке
+            product = await self.product_repo.get_by_id(product_id)
+            if not product:
+                raise ProductNotFoundError(product_id=str(product_id))
 
-        # Проверка на отрицательный остаток
-        if new_quantity < 0:
+            # Продукт существует, значит недостаточно товара
             raise InsufficientStockError(
                 str(product_id),
                 abs(quantity_delta),
                 product.stock_quantity
             )
-
-        # Обновление остатка
-        updated_product = await self.product_repo.update(
-            product_id,
-            stock_quantity=new_quantity
-        )
 
         return ProductResponse.model_validate(updated_product)
 
